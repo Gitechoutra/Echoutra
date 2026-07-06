@@ -1,0 +1,664 @@
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Outlet, useNavigate, useLocation, Link } from "react-router";
+import { motion, AnimatePresence } from "motion/react";
+import {
+  LayoutDashboard,
+  TrendingUp,
+  Briefcase,
+  Star,
+  ArrowLeftRight,
+  Newspaper,
+  Settings,
+  Bell,
+  Search,
+  Menu,
+  X,
+  LogOut,
+  ChevronDown,
+  BarChart2,
+  Receipt,
+} from "lucide-react";
+import { useAuth } from "../../context/AuthContext";
+
+const API_BASE = "http://127.0.0.1:5050/v1";
+const getToken  = () => localStorage.getItem("access_token");
+
+/* Auth header — NO credentials:'include' (that causes CORS preflight on every request) */
+const authHdr = () => ({
+  Authorization:  `Bearer ${getToken()}`,
+  "Content-Type": "application/json",
+});
+
+const nav = [
+  { path: "/user",              label: "Dashboard",    icon: LayoutDashboard, exact: true },
+  { path: "/user/market",       label: "Markets",      icon: TrendingUp },
+  { path: "/user/portfolio",    label: "Portfolio",    icon: Briefcase },
+  { path: "/user/watchlist",    label: "Watchlist",    icon: Star },
+  { path: "/user/trade",        label: "Trade",        icon: ArrowLeftRight },
+  { path: "/user/news",         label: "News",         icon: Newspaper },
+  { path: "/user/transactions", label: "Transactions", icon: Receipt },
+  { path: "/user/settings",     label: "Settings",     icon: Settings },
+];
+
+/* ────────────────────────────────────────────────────────────────────────── */
+export function UserLayout() {
+  const navigate  = useNavigate();
+  const location  = useLocation();
+  const { user: authUser, logout } = useAuth();
+
+  const [sidebar,       setSidebar]       = useState(false);
+  const [notifs,        setNotifs]        = useState(false);
+  const [searchQuery,   setSearchQuery]   = useState("");
+  const [searchOpen,    setSearchOpen]    = useState(false);
+  const [profileOpen,   setProfileOpen]   = useState(false);
+  const [searchResults, setSearchResults] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadCount,   setUnreadCount]   = useState(0);
+  const [notifLoading,  setNotifLoading]  = useState(false);
+  const [userProfile,   setUserProfile]   = useState(null);
+  const [holdings,      setHoldings]      = useState([]);
+
+  /* ── Ticker indices — seeded with static fallback ── */
+  const [marketIndices, setMarketIndices] = useState([
+    { name: "S&P 500", value: "5,248.49", change: "+0.87%", up: true  },
+    { name: "NASDAQ",  value: "16,428.82",change: "+1.15%", up: true  },
+    { name: "DOW",     value: "39,127.14",change: "+0.32%", up: true  },
+    { name: "VIX",     value: "13.47",    change: "-2.34%", up: false },
+  ]);
+
+  /* Stable refs so interval closures always call the latest version */
+  const fetchMarketRef = useRef(null);
+  const fetchNotifRef  = useRef(null);
+  const marketIntervalRef = useRef(null);
+  const notifIntervalRef  = useRef(null);
+
+  /* ── Fetch market overview (ticker data) ─────────────────────────────────
+     Uses /dashboard/user/market_overview — lighter endpoint, no CORS issues.
+     Falls back to /dashboard/sector_performance if needed.
+     IMPORTANT: No `credentials:'include'` — JWT is in the Authorization header.
+  ──────────────────────────────────────────────────────────────────────── */
+  const fetchMarketIndices = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+
+    try {
+      /* Primary — market overview */
+      const res  = await fetch(`${API_BASE}/dashboard/user/market_overview`, {
+        headers: authHdr(),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const raw  = data?.response || [];
+        if (Array.isArray(raw) && raw.length > 0) {
+          setMarketIndices(
+            raw.slice(0, 6).map((m) => {
+              const chg = m.change ?? m.change_pct ?? 0;
+              const up  = typeof chg === "number" ? chg >= 0 : !String(chg).startsWith("-");
+              return {
+                name:   m.name      || m.index_name || "—",
+                value:  m.value     || m.current_value || "—",
+                change: typeof chg  === "number"
+                  ? `${up ? "+" : ""}${chg.toFixed(2)}%`
+                  : String(chg),
+                up,
+              };
+            })
+          );
+          return;
+        }
+      }
+
+      /* Fallback — sector performance */
+      const res2  = await fetch(`${API_BASE}/dashboard/sector_performance`, {
+        headers: authHdr(),
+      });
+      if (res2.ok) {
+        const data2   = await res2.json();
+        const sectors = data2?.response?.sectors || [];
+        if (sectors.length > 0) {
+          setMarketIndices(
+            sectors.slice(0, 4).map((s) => {
+              const chg = s.day_change_percent || 0;
+              return {
+                name:   s.sector_name || "—",
+                value:  `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
+                change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
+                up:     chg >= 0,
+              };
+            })
+          );
+        }
+      }
+    } catch {
+      /* Keep existing fallback indices — no error log spam */
+    }
+  }, []); // ← stable — no deps that change
+
+  /* ── Fetch user profile ──────────────────────────────────────────────── */
+  const fetchUserProfile = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+    try {
+      const res  = await fetch(`${API_BASE}/user_profiles/me`, { headers: authHdr() });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.bool && data.response) setUserProfile(data.response);
+      }
+    } catch {}
+  }, []);
+
+  /* ── Fetch holdings for search enrichment ───────────────────────────── */
+  const fetchUserHoldings = useCallback(async () => {
+    const token = getToken();
+    if (!token) return;
+    try {
+      const portRes  = await fetch(`${API_BASE}/portfolios/my`, { headers: authHdr() });
+      if (!portRes.ok) return;
+      const portData = await portRes.json();
+      const list     = portData?.response?.portfolios || [];
+      if (list.length === 0) return;
+
+      const def      = list.find(p => p.is_default) || list[0];
+      const holdRes  = await fetch(`${API_BASE}/portfolios/${def.portfolio_id}`, { headers: authHdr() });
+      if (!holdRes.ok) return;
+      const holdData = await holdRes.json();
+      if (holdData?.bool && holdData.response?.holdings) {
+        setHoldings(holdData.response.holdings);
+      }
+    } catch {}
+  }, []);
+
+  const fetchNotifications = useCallback(async (showSpinner = false) => {
+    const token = getToken();
+    if (!token) return;
+    if (showSpinner) setNotifLoading(true);
+    try {
+      const [nRes, uRes] = await Promise.all([
+        fetch(`${API_BASE}/notifications/my`,           { headers: authHdr() }),
+        fetch(`${API_BASE}/notifications/unread_count`, { headers: authHdr() }),
+      ]);
+      if (nRes.ok) {
+        const nd = await nRes.json();
+        if (nd?.bool) setNotifications((nd.response?.notifications || []).slice(0, 8));
+      }
+      if (uRes.ok) {
+        const ud = await uRes.json();
+        if (ud?.bool) setUnreadCount(ud.response?.unread_count || ud.response?.count || 0);
+      }
+    } catch {
+      /* keep last known notifications — no error spam */
+    } finally {
+      if (showSpinner) setNotifLoading(false);
+    }
+  }, []);
+
+  /* Keep refs current so interval closures always call the latest fn */
+  useEffect(() => { fetchMarketRef.current = fetchMarketIndices; }, [fetchMarketIndices]);
+  useEffect(() => { fetchNotifRef.current  = fetchNotifications; }, [fetchNotifications]);
+
+  /* ── Mark notification read ─────────────────────────────────────────── */
+  const markNotificationRead = async (id) => {
+    try {
+      await fetch(`${API_BASE}/notifications/${id}/read`, {
+        method:  "POST",
+        headers: authHdr(),
+      });
+      setNotifications(prev => prev.filter(n => n.notification_id !== id));
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    } catch {}
+  };
+
+  /* ── Toggle bell dropdown — refetch fresh data every time it's opened ── */
+  const toggleNotifs = () => {
+    const next = !notifs;
+    setNotifs(next);
+    if (next) fetchNotifications(true); // showSpinner=true for instant feedback
+  };
+
+  /* ── Debounced stock search ──────────────────────────────────────────── */
+  const searchStocks = useCallback(async (query) => {
+    if (!query.trim()) { setSearchResults([]); return; }
+    const token = getToken();
+    if (!token) return;
+    try {
+      const params = new URLSearchParams({ search: query, per_page: 8 });
+      const res    = await fetch(`${API_BASE}/stocks/list?${params}`, { headers: authHdr() });
+      if (!res.ok) return;
+      const data  = await res.json();
+      if (!data?.bool) return;
+
+      const stocks      = data.response?.stocks || [];
+      const holdSymbols = new Set(holdings.map(h => h.ticker_symbol));
+      const results = [
+        ...holdings
+          .filter(h =>
+            h.ticker_symbol?.toLowerCase().includes(query.toLowerCase()) ||
+            h.company_name?.toLowerCase().includes(query.toLowerCase())
+          )
+          .map(h => ({ symbol: h.ticker_symbol, name: h.company_name, type: "Holding", logo_url: h.logo_url })),
+        ...stocks
+          .filter(s => !holdSymbols.has(s.ticker_symbol))
+          .map(s => ({ symbol: s.ticker_symbol, name: s.company_name, type: "Stock", logo_url: s.logo_url })),
+      ].slice(0, 8);
+      setSearchResults(results);
+    } catch { setSearchResults([]); }
+  }, [holdings]);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (searchQuery) searchStocks(searchQuery);
+      else setSearchResults([]);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchQuery, searchStocks]);
+
+  /* ── One-time init + intervals (EMPTY dep array → runs once only) ───────
+     Root causes fixed here:
+     • Notifications previously had NO recurring interval at all — only
+       fetched once at mount. Admin-sent alerts (stock/news/KYC/etc.) would
+       sit in the DB and never reach the bell until a hard page reload.
+       Fixed by adding a dedicated 30-second poll for notifications.
+     • Having `fetchX` functions in the dep array caused the effect to
+       re-register whenever function identity changed — avoided by using
+       stable refs (fetchMarketRef / fetchNotifRef) inside the intervals.
+     • `credentials:'include'` caused a CORS preflight (OPTIONS) before
+       EVERY request — removed from all fetch calls above.
+     • Market ticker interval stays at 5 minutes (price data is slow-moving).
+     • Notifications interval is 30 seconds (needs to feel near-live).
+  ──────────────────────────────────────────────────────────────────────── */
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+
+    /* Initial fetch — call through refs so we don't need them as deps */
+    fetchMarketIndices();
+    fetchUserProfile();
+    fetchUserHoldings();
+    fetchNotifications();
+
+    /* Refresh ticker every 5 minutes */
+    marketIntervalRef.current = setInterval(() => {
+      if (getToken()) fetchMarketRef.current?.();
+      else {
+        clearInterval(marketIntervalRef.current);
+        marketIntervalRef.current = null;
+      }
+    }, 300_000); // 5 minutes
+
+    /* Refresh notifications every 30 seconds — this is the actual fix:
+       admin-sent notifications now reach the bell without a page reload */
+    notifIntervalRef.current = setInterval(() => {
+      if (getToken()) fetchNotifRef.current?.();
+      else {
+        clearInterval(notifIntervalRef.current);
+        notifIntervalRef.current = null;
+      }
+    }, 30_000); // 30 seconds
+
+    return () => {
+      clearInterval(marketIntervalRef.current);
+      clearInterval(notifIntervalRef.current);
+      marketIntervalRef.current = null;
+      notifIntervalRef.current  = null;
+    };
+  }, []); // ← intentionally empty — runs once on mount
+
+  /* ── Refetch notifications whenever the user navigates to a new page ──
+     Catches the case where an admin notification arrived while the user
+     was mid-navigation; keeps the badge accurate without waiting 30s. ── */
+  useEffect(() => {
+    if (getToken()) fetchNotifRef.current?.();
+  }, [location.pathname]);
+
+  /* ── Logout ─────────────────────────────────────────────────────────── */
+  const handleLogout = async () => {
+    try {
+      const token = getToken();
+      if (token) {
+        await fetch(`${API_BASE}/authentication/logout`, {
+          method:  "POST",
+          headers: authHdr(),
+        });
+      }
+    } catch {}
+    localStorage.removeItem("access_token");
+    localStorage.removeItem("refresh_token");
+    logout();
+    navigate("/");
+  };
+
+  /* ── Helpers ─────────────────────────────────────────────────────────── */
+  const isActive = (path, exact = false) =>
+    exact ? location.pathname === path : location.pathname.startsWith(path);
+
+  const getNotifIcon = (type) => {
+    const t = (type || "").toUpperCase();
+    if (t === "PRICE_ALERT")        return "📈";
+    if (t === "ORDER_EXECUTED")     return "✅";
+    if (t === "PORTFOLIO_UPDATE")   return "📊";
+    if (t === "NEWS" || t === "MARKET_NEWS") return "📰";
+    if (t === "KYC" || t === "KYC_UPDATE" || t === "KYC_APPROVED" || t === "KYC_REJECTED") return "🪪";
+    if (t === "ADMIN_MESSAGE")      return "📨";
+    if (t === "WALLET" || t === "DEPOSIT" || t === "WITHDRAWAL") return "💰";
+    return "🔔";
+  };
+
+  const timeAgo = (dateString) => {
+    if (!dateString) return "recently";
+    const secs = Math.floor((Date.now() - new Date(dateString).getTime()) / 1000);
+    if (secs < 60)   return `${secs}s ago`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+    if (secs < 86400)return `${Math.floor(secs / 3600)}h ago`;
+    return `${Math.floor(secs / 86400)}d ago`;
+  };
+
+  /* ── Derived display values ──────────────────────────────────────────── */
+  const displayName   = userProfile?.first_name
+    ? `${userProfile.first_name} ${userProfile.last_name || ""}`.trim()
+    : authUser?.name  || "Investor";
+  const displayEmail  = userProfile?.email  || authUser?.email  || "";
+  const displayAvatar = displayName.charAt(0).toUpperCase() || "I";
+  const userPlan      = userProfile?.subscription_plan || authUser?.plan || "Free";
+
+  /* ════════════════════════════════════════════════════════════════════════
+     RENDER
+  ════════════════════════════════════════════════════════════════════════ */
+  return (
+    <div className="flex h-screen bg-[#07091A] text-white overflow-hidden">
+
+      {/* ── Ticker bar ── */}
+      <div className="fixed top-0 left-0 right-0 z-50 h-7 bg-[#0A0E1E] border-b border-cyan-500/10 overflow-hidden">
+        <div className="flex items-center h-full" style={{ animation: "ticker 32s linear infinite" }}>
+          {[...marketIndices, ...marketIndices].map((m, i) => (
+            <div key={i} className="flex items-center gap-2 px-5 whitespace-nowrap">
+              <span className="text-xs text-gray-500">{m.name}</span>
+              <span className="text-xs text-white">{m.value}</span>
+              <span className={`text-xs ${m.up ? "text-emerald-400" : "text-red-400"}`}>{m.change}</span>
+              <span className="text-cyan-900 text-xs">|</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Mobile overlay ── */}
+      <AnimatePresence>
+        {sidebar && (
+          <motion.div
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 z-40 lg:hidden"
+            onClick={() => setSidebar(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* ── Sidebar ── */}
+      <aside className={`fixed lg:relative top-7 left-0 bottom-0 w-[228px] bg-[#0A0E1E] border-r border-cyan-500/10 z-40 flex flex-col pb-7 transition-transform duration-300 ${sidebar ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+
+        {/* Logo */}
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-cyan-500/10">
+          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg shadow-cyan-500/20">
+            <BarChart2 className="w-4 h-4 text-white" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold text-white">TradeFlow</div>
+            <div className="text-xs text-cyan-400">Investor Portal</div>
+          </div>
+          <button className="lg:hidden" onClick={() => setSidebar(false)}>
+            <X className="w-4 h-4 text-gray-500" />
+          </button>
+        </div>
+
+        {/* Plan badge */}
+        <div className="mx-4 my-3 px-3 py-2 bg-cyan-500/8 border border-cyan-500/15 rounded-xl flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+          <span className="text-xs text-cyan-300 font-medium">Personal View</span>
+          <span className="ml-auto text-xs text-gray-600">{userPlan}</span>
+        </div>
+
+        {/* Nav links */}
+        <nav className="flex-1 overflow-y-auto px-3 py-2">
+          {nav.map((item) => {
+            const active = isActive(item.path, item.exact);
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onClick={() => setSidebar(false)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl mb-1 transition-all duration-200 group ${
+                  active
+                    ? "bg-gradient-to-r from-cyan-500/15 to-blue-600/10 text-cyan-300 border border-cyan-500/20"
+                    : "text-gray-500 hover:text-white hover:bg-white/5"
+                }`}
+              >
+                <item.icon className={`w-4 h-4 ${active ? "text-cyan-400" : "text-gray-600 group-hover:text-white"}`} />
+                <span className="text-sm">{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+
+        {/* User row */}
+        <div className="p-4 border-t border-cyan-500/10">
+          <div className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white">
+              {displayAvatar}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm text-white truncate">{displayName}</div>
+              <div className="text-xs text-gray-600 truncate">{displayEmail}</div>
+            </div>
+            <button onClick={handleLogout} className="text-gray-600 hover:text-red-400 transition-colors">
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── Main content ── */}
+      <div className="flex-1 flex flex-col min-w-0 mt-7">
+
+        {/* Header */}
+        <header className="bg-[#0A0E1E] border-b border-cyan-500/10 px-4 lg:px-6 py-3 flex items-center gap-4">
+          <button className="lg:hidden" onClick={() => setSidebar(true)}>
+            <Menu className="w-5 h-5 text-gray-400" />
+          </button>
+
+          {/* Search */}
+          <div className="flex-1 max-w-xs relative z-50">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+            <input
+              type="text"
+              placeholder="Search stocks or companies..."
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setSearchOpen(true); }}
+              onFocus={() => setSearchOpen(true)}
+              onBlur={() => setTimeout(() => setSearchOpen(false), 200)}
+              className="w-full bg-[#141C30] border border-cyan-500/10 rounded-xl pl-9 pr-4 py-2 text-sm text-gray-300 placeholder-gray-700 focus:outline-none focus:border-cyan-500/30 transition-colors"
+            />
+            {searchOpen && searchQuery && searchResults.length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-2 bg-[#0C1220] border border-cyan-500/10 rounded-2xl shadow-2xl overflow-hidden">
+                <div className="py-2">
+                  <div className="px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Results</div>
+                  {searchResults.map((res, i) => (
+                    <div key={i}
+                      onClick={() => { navigate(`/user/stock/${res.symbol}`); setSearchOpen(false); setSearchQuery(""); }}
+                      className="px-4 py-3 hover:bg-white/5 cursor-pointer border-b border-white/5 last:border-0 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-3">
+                        {res.logo_url ? (
+                          <img src={res.logo_url} alt={res.symbol} className="w-6 h-6 rounded-lg object-contain bg-white/5" onError={(e) => { e.target.style.display="none"; }} />
+                        ) : (
+                          <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-cyan-500/15 to-blue-600/15 border border-cyan-500/10 flex items-center justify-center">
+                            <span className="text-xs font-bold text-cyan-400">{res.symbol?.slice(0, 2)}</span>
+                          </div>
+                        )}
+                        <div>
+                          <div className="text-sm font-bold text-white">{res.symbol}</div>
+                          <div className="text-xs text-gray-500 truncate max-w-[140px]">{res.name}</div>
+                        </div>
+                      </div>
+                      <div className="text-xs px-2 py-1 bg-cyan-500/10 text-cyan-400 rounded-md">{res.type}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {searchOpen && searchQuery && searchResults.length === 0 && (
+              <div className="absolute top-full left-0 right-0 mt-2 bg-[#0C1220] border border-cyan-500/10 rounded-2xl shadow-2xl overflow-hidden">
+                <div className="px-4 py-4 text-center text-sm text-gray-500">No results for "{searchQuery}"</div>
+              </div>
+            )}
+          </div>
+
+          <div className="ml-auto flex items-center gap-3">
+            {/* Markets open indicator */}
+            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/15 rounded-full">
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <span className="text-xs text-emerald-400">Markets Open</span>
+            </div>
+
+            {/* Notifications */}
+            <div className="relative">
+              <button
+                onClick={toggleNotifs}
+                className="relative p-2 rounded-xl bg-[#141C30] border border-cyan-500/10 text-gray-500 hover:text-white transition-colors"
+              >
+                <Bell className="w-4 h-4" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />
+                )}
+              </button>
+
+              {notifs && (
+                <div className="absolute right-0 top-full mt-2 w-72 bg-[#0C1220] border border-cyan-500/10 rounded-2xl shadow-2xl z-50 overflow-hidden">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-white/5">
+                    <span className="text-sm font-medium text-white">Alerts ({unreadCount} unread)</span>
+                    {notifications.length > 0 && (
+                      <button
+                        onClick={async () => {
+                          await fetch(`${API_BASE}/notifications/mark_all_read`, { method: "POST", headers: authHdr() });
+                          setNotifications([]);
+                          setUnreadCount(0);
+                        }}
+                        className="text-xs text-cyan-400 hover:underline"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  {notifLoading ? (
+                    <div className="px-4 py-6 flex items-center justify-center">
+                      <div className="w-5 h-5 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
+                    </div>
+                  ) : notifications.length > 0 ? (
+                    notifications.map((n) => (
+                      <div
+                        key={n.notification_id}
+                        onClick={() => markNotificationRead(n.notification_id)}
+                        className="px-4 py-3 hover:bg-white/5 cursor-pointer border-b border-white/5 last:border-0"
+                      >
+                        <div className="flex items-start gap-2.5">
+                          <span className="text-base">{getNotifIcon(n.notification_type || n.type)}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <div className="text-sm text-white truncate">{n.title}</div>
+                              {!n.is_read && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 flex-shrink-0" />}
+                            </div>
+                            <div className="text-xs text-gray-500 mt-0.5 line-clamp-2">{n.message || n.body}</div>
+                            <div className="text-xs text-gray-600 mt-1">{timeAgo(n.created_at || n.created_on)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="px-4 py-6 text-center text-sm text-gray-500">No new notifications</div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Profile dropdown */}
+            <div className="relative">
+              <div
+                onClick={() => setProfileOpen(!profileOpen)}
+                className="flex items-center gap-2 cursor-pointer p-1.5 pr-3 rounded-xl hover:bg-white/5 transition-colors"
+              >
+                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white">
+                  {displayAvatar}
+                </div>
+                <span className="text-sm text-gray-300 hidden sm:block">{displayName.split(" ")[0]}</span>
+                <ChevronDown className="w-3 h-3 text-gray-500" />
+              </div>
+
+              {profileOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setProfileOpen(false)} />
+                  <div className="absolute right-0 top-full mt-2 w-52 bg-[#0C1220] border border-cyan-500/10 rounded-2xl shadow-2xl z-50 overflow-hidden py-1">
+                    {/* Profile info */}
+                    <div className="px-4 py-3 border-b border-white/5">
+                      <div className="text-sm font-medium text-white truncate">{displayName}</div>
+                      <div className="text-xs text-gray-500 truncate">{displayEmail}</div>
+                      <div className="text-xs text-cyan-400 mt-1">{userPlan} Plan</div>
+                    </div>
+                    <button
+                      onClick={() => { setProfileOpen(false); navigate("/user/settings"); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
+                    >
+                      Account Settings
+                    </button>
+                    <button
+                      onClick={() => { setProfileOpen(false); navigate("/user/settings"); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
+                    >
+                      Security
+                    </button>
+                    <button
+                      onClick={() => { setProfileOpen(false); navigate("/user/transactions"); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
+                    >
+                      Transactions
+                    </button>
+                    <hr className="border-white/5 my-1" />
+                    <button
+                      onClick={() => { setProfileOpen(false); handleLogout(); }}
+                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-red-400 hover:bg-white/5 transition-colors"
+                    >
+                      Sign Out
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </header>
+
+        {/* Page content */}
+        <main className="flex-1 overflow-y-auto bg-[#07091A]">
+          <Outlet />
+        </main>
+      </div>
+
+      <style>{`@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}`}</style>
+    </div>
+  );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

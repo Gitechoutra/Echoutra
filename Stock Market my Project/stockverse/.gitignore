@@ -1,0 +1,13 @@
+migrations/*
+*.log
+log/*
+*.pyc
+/env/*
+env/*
+env/
+log/*
+*.log*
+/log/*
+log/
+.env
+web.config
