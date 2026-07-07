@@ -42,6 +42,31 @@ def _client_ip():
     return request.headers.get('X-Forwarded-For', request.remote_addr)
 
 
+def _generate_referral_code():
+    """Generate a unique 8-char uppercase alphanumeric referral code."""
+    import random, string
+    alphabet = string.ascii_uppercase + string.digits
+    for _ in range(10):  # retry a few times on the astronomically unlikely collision
+        code = ''.join(random.choices(alphabet, k=8))
+        if not Users.query.filter_by(referral_code=code).first():
+            return code
+    # Fallback: extremely unlikely — append more entropy
+    return ''.join(random.choices(alphabet, k=12))
+
+
+def _parse_dob(value):
+    """Parse a YYYY-MM-DD (or ISO) date string into a date, or return None."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value).date()
+    except (ValueError, TypeError):
+        try:
+            return datetime.strptime(value, '%Y-%m-%d').date()
+        except (ValueError, TypeError):
+            return None
+
+
 def _build_tokens(user: Users):
     additional = {
         'role':     user.role.role_name,
@@ -71,11 +96,21 @@ def _log_login(user_id, status, reason=None, session_id=None):
 # ── Parsers  ─────────────
 
 register_parser = reqparse.RequestParser()
-register_parser.add_argument('email',     type=str, required=True,  location='json')
-register_parser.add_argument('username',  type=str, required=True,  location='json')
-register_parser.add_argument('password',  type=str, required=True,  location='json')
-register_parser.add_argument('full_name', type=str, required=False, location='json')
-register_parser.add_argument('role_name', type=str, required=False, location='json', default='USER')
+register_parser.add_argument('email',         type=str,  required=True,  location='json')
+register_parser.add_argument('username',      type=str,  required=True,  location='json')
+register_parser.add_argument('password',      type=str,  required=True,  location='json')
+register_parser.add_argument('first_name',    type=str,  required=True,  location='json')
+register_parser.add_argument('last_name',     type=str,  required=True,  location='json')
+register_parser.add_argument('mobile_number', type=str,  required=False, location='json')
+register_parser.add_argument('date_of_birth', type=str,  required=False, location='json')  # YYYY-MM-DD
+register_parser.add_argument('country',       type=str,  required=False, location='json')
+register_parser.add_argument('state',         type=str,  required=False, location='json')
+register_parser.add_argument('city',          type=str,  required=False, location='json')
+register_parser.add_argument('referral_code', type=str,  required=False, location='json')
+register_parser.add_argument('terms_accepted',type=bool, required=False, location='json', default=False)
+# full_name kept for backward compatibility — derived from first+last when absent
+register_parser.add_argument('full_name',     type=str,  required=False, location='json')
+register_parser.add_argument('role_name',     type=str,  required=False, location='json', default='USER')
 
 login_parser = reqparse.RequestParser()
 login_parser.add_argument('email',    type=str, required=True, location='json')
@@ -112,14 +147,31 @@ class Register(Resource):
     @ns.expect(register_parser, validate=True)
     def post(self):
         try:
-            args      = register_parser.parse_args(strict=False)
-            email     = args['email'].strip().lower()
-            username  = args['username'].strip()
-            password  = args['password']
-            full_name = (args.get('full_name') or '').strip()
-            role_name = (args.get('role_name') or 'USER').strip().upper()
+            args       = register_parser.parse_args(strict=False)
+            email      = args['email'].strip().lower()
+            username   = args['username'].strip()
+            password   = args['password']
+            first_name = (args.get('first_name') or '').strip()
+            last_name  = (args.get('last_name') or '').strip()
+            role_name  = (args.get('role_name') or 'USER').strip().upper()
 
-            print(request.json, "33333333333333333333333333333")
+            # full_name: prefer explicit, else compose from first + last
+            full_name  = (args.get('full_name') or f"{first_name} {last_name}").strip()
+
+            mobile_number = (args.get('mobile_number') or '').strip()
+            country       = (args.get('country') or '').strip()
+            state         = (args.get('state') or '').strip()
+            city          = (args.get('city') or '').strip()
+            referred_by   = (args.get('referral_code') or '').strip().upper()
+            dob           = _parse_dob(args.get('date_of_birth'))
+
+            # ── Required-field / consent validation ───────────────────────────
+            if not first_name or not last_name:
+                return jsonify(bool=False, status=400,
+                               response={'message': 'First name and last name are required.'})
+            if not args.get('terms_accepted'):
+                return jsonify(bool=False, status=400,
+                               response={'message': 'You must accept the Terms & Conditions to register.'})
 
             # ── Duplicate checks ──────────────────────────────────────────────
             if Users.query.filter_by(email=email).first():
@@ -134,22 +186,34 @@ class Register(Resource):
             if not role:
                 return jsonify(bool=False, status=400,
                                response={'message': f"Role '{role_name}' not found."})
-            
-            print(request.json, "22222222222222222222222222222222")
 
             # ── Create user ───────────────────────────────────────────────────
-            user               = Users()
-            user.email         = email
-            user.username      = username
-            user.password_hash = generate_password_hash(password)
-            user.full_name     = full_name
-            user.role_id       = role.role_id
-            user.status        = UserStatus.PENDING
+            user                   = Users()
+            user.email             = email
+            user.username          = username
+            user.password_hash     = generate_password_hash(password)
+            user.full_name         = full_name
+            user.role_id           = role.role_id
+            user.status            = UserStatus.PENDING
+            user.referral_code     = _generate_referral_code()
+            user.referred_by_code  = referred_by or None
+            user.terms_accepted    = True
+            user.terms_accepted_at = datetime.now(timezone.utc)
             user.save()
-            print(request.json, "1111111111111111111111111111111111")
 
             # ── Companion records ─────────────────────────────────────────────
-            profile         = UserProfiles();            profile.user_id  = user.user_id; profile.save()
+            profile               = UserProfiles()
+            profile.user_id       = user.user_id
+            profile.first_name    = first_name
+            profile.last_name     = last_name
+            profile.display_name  = full_name
+            profile.phone_number  = mobile_number or None
+            profile.date_of_birth = dob
+            profile.country       = country or None
+            profile.state         = state or None
+            profile.city          = city or None
+            profile.save()
+
             prefs           = UserPreferences();         prefs.user_id    = user.user_id; prefs.save()
             sec             = UserSecuritySettings();    sec.user_id      = user.user_id; sec.save()
             wallet          = Wallets();                 wallet.user_id   = user.user_id; wallet.save()
@@ -168,8 +232,6 @@ class Register(Resource):
             otp.expires_at      = datetime.now(timezone.utc) + timedelta(minutes=10)
             otp.save()
 
-            print(request.json, "444444444444444444444444444444")
-
             # ── Send OTP email (raw_otp goes to user, hash stays in DB) ───────
             email_sent = send_otp_email(
                 to_email=email,
@@ -182,8 +244,6 @@ class Register(Resource):
             # ── Build tokens ──────────────────────────────────────────────────
             access, refresh = _build_tokens(user)
 
-            print(request.json, "555555555555555555555555555555")
-
             logger.info(f"[Auth] User registered: {email} | OTP email sent: {email_sent}")
 
             return jsonify(bool=True, status=200, response={
@@ -192,7 +252,9 @@ class Register(Resource):
                 'refresh_token': refresh,
                 'user_id':       user.user_id,
                 'email':         user.email,
+                'full_name':     user.full_name,
                 'role':          role.role_name,
+                'referral_code': user.referral_code,
                 'otp_email_sent':email_sent,
             })
 

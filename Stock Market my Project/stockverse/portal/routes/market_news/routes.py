@@ -334,9 +334,28 @@ class CreateNews(Resource):
                 mapping.is_primary = (sid == stock_ids[0])
                 mapping.save()
 
+            # ── Notify users about the new article (best-effort) ──────────────
+            from portal.helpers.notify import broadcast_to_all
+            from portal.models.notifications import NotificationType, NotificationPriority
+            is_breaking = bool(args.get('is_breaking'))
+            admin_id    = get_jwt().get('user_id')
+            title       = ("🚨 Breaking: " if is_breaking else "") + article.title
+            notified    = broadcast_to_all(
+                NotificationType.NEWS_ALERT,
+                title=title,
+                body=article.summary or "Tap to read the latest market news on TradeFlow.",
+                priority=NotificationPriority.HIGH if is_breaking else NotificationPriority.MEDIUM,
+                action_url=f"/user/news",
+                image_url=article.image_url,
+                reference_type="NEWS",
+                reference_id=article.news_id,
+                exclude_user_id=admin_id,
+            )
+
             return jsonify(bool=True, status=200, response={
-                'message': 'Article created.',
-                'news_id': article.news_id,
+                'message':        'Article created.',
+                'news_id':        article.news_id,
+                'users_notified': notified,
             })
 
         except Exception as e:

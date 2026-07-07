@@ -51,6 +51,7 @@ export function UserLayout() {
   const [searchQuery,   setSearchQuery]   = useState("");
   const [searchOpen,    setSearchOpen]    = useState(false);
   const [profileOpen,   setProfileOpen]   = useState(false);
+  const [sidebarMenu,   setSidebarMenu]   = useState(false);
   const [searchResults, setSearchResults] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [unreadCount,   setUnreadCount]   = useState(0);
@@ -209,6 +210,14 @@ export function UserLayout() {
     } catch {}
   };
 
+  /* ── Click a notification → mark read + follow its deep link ─────────── */
+  const handleNotificationClick = (n) => {
+    markNotificationRead(n.notification_id);
+    setNotifs(false);
+    const url = n.action_url;
+    if (url && url.startsWith("/")) navigate(url);
+  };
+
   /* ── Toggle bell dropdown — refetch fresh data every time it's opened ── */
   const toggleNotifs = () => {
     const next = !notifs;
@@ -335,11 +344,16 @@ export function UserLayout() {
   const getNotifIcon = (type) => {
     const t = (type || "").toUpperCase();
     if (t === "PRICE_ALERT")        return "📈";
-    if (t === "ORDER_EXECUTED")     return "✅";
+    if (t === "ORDER_EXECUTED" || t === "ORDER_FILLED") return "✅";
+    if (t === "ORDER_CANCELLED" || t === "ORDER_REJECTED") return "❌";
     if (t === "PORTFOLIO_UPDATE")   return "📊";
-    if (t === "NEWS" || t === "MARKET_NEWS") return "📰";
+    if (t === "NEWS" || t === "MARKET_NEWS" || t === "NEWS_ALERT") return "📰";
+    if (t === "STOCK_LISTED")       return "🆕";
+    if (t === "DIVIDEND")           return "💵";
+    if (t === "SUBSCRIPTION")       return "⭐";
     if (t === "KYC" || t === "KYC_UPDATE" || t === "KYC_APPROVED" || t === "KYC_REJECTED") return "🪪";
     if (t === "ADMIN_MESSAGE")      return "📨";
+    if (t === "SECURITY")           return "🔒";
     if (t === "WALLET" || t === "DEPOSIT" || t === "WITHDRAWAL") return "💰";
     return "🔔";
   };
@@ -356,7 +370,7 @@ export function UserLayout() {
   /* ── Derived display values ──────────────────────────────────────────── */
   const displayName   = userProfile?.first_name
     ? `${userProfile.first_name} ${userProfile.last_name || ""}`.trim()
-    : authUser?.name  || "Investor";
+    : authUser?.full_name || authUser?.name || authUser?.username || "Investor";
   const displayEmail  = userProfile?.email  || authUser?.email  || "";
   const displayAvatar = displayName.charAt(0).toUpperCase() || "I";
   const userPlan      = userProfile?.subscription_plan || authUser?.plan || "Free";
@@ -439,8 +453,11 @@ export function UserLayout() {
         </nav>
 
         {/* User row */}
-        <div className="p-4 border-t border-cyan-500/10">
-          <div className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors">
+        <div className="p-4 border-t border-cyan-500/10 relative">
+          <div
+            onClick={() => setSidebarMenu((v) => !v)}
+            className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors"
+          >
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white">
               {displayAvatar}
             </div>
@@ -448,10 +465,42 @@ export function UserLayout() {
               <div className="text-sm text-white truncate">{displayName}</div>
               <div className="text-xs text-gray-600 truncate">{displayEmail}</div>
             </div>
-            <button onClick={handleLogout} className="text-gray-600 hover:text-red-400 transition-colors">
-              <LogOut className="w-4 h-4" />
-            </button>
+            <ChevronDown className={`w-4 h-4 text-gray-500 flex-shrink-0 transition-transform ${sidebarMenu ? "rotate-180" : ""}`} />
           </div>
+
+          {sidebarMenu && (
+            <>
+              {/* Click-away backdrop */}
+              <div className="fixed inset-0 z-40" onClick={() => setSidebarMenu(false)} />
+              {/* Dropdown — opens upward since the row sits at the bottom */}
+              <div className="absolute left-4 right-4 bottom-full mb-2 bg-[#0C1220] border border-cyan-500/10 rounded-2xl shadow-2xl z-50 overflow-hidden py-1">
+                <div className="px-4 py-3 border-b border-white/5">
+                  <div className="text-sm font-medium text-white truncate">{displayName}</div>
+                  <div className="text-xs text-gray-500 truncate">{displayEmail}</div>
+                  <div className="text-xs text-cyan-400 mt-1">{userPlan} Plan</div>
+                </div>
+                <button
+                  onClick={() => { setSidebarMenu(false); navigate("/user/settings"); }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  Account Settings
+                </button>
+                <button
+                  onClick={() => { setSidebarMenu(false); navigate("/user/transactions"); }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
+                >
+                  Transactions
+                </button>
+                <hr className="border-white/5 my-1" />
+                <button
+                  onClick={() => { setSidebarMenu(false); handleLogout(); }}
+                  className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-red-400 hover:bg-white/5 transition-colors flex items-center gap-2"
+                >
+                  <LogOut className="w-4 h-4" /> Sign Out
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </aside>
 
@@ -555,7 +604,7 @@ export function UserLayout() {
                     notifications.map((n) => (
                       <div
                         key={n.notification_id}
-                        onClick={() => markNotificationRead(n.notification_id)}
+                        onClick={() => handleNotificationClick(n)}
                         className="px-4 py-3 hover:bg-white/5 cursor-pointer border-b border-white/5 last:border-0"
                       >
                         <div className="flex items-start gap-2.5">

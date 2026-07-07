@@ -26,6 +26,14 @@ class Users(db.Model):
     is_active = db.Column(db.Boolean, default=True)
     status = db.Column(db.String(20), default=UserStatus.PENDING)  # ACTIVE, SUSPENDED, PENDING, BANNED
 
+    # Referral program
+    referral_code    = db.Column(db.String(20), unique=True, nullable=True, index=True)  # this user's own code
+    referred_by_code = db.Column(db.String(20), nullable=True)                           # code entered at signup
+
+    # Terms & Conditions acceptance (compliance)
+    terms_accepted    = db.Column(db.Boolean, default=False)
+    terms_accepted_at = db.Column(db.DateTime, nullable=True)
+
     last_login = db.Column(db.DateTime, nullable=True)
     last_password_change = db.Column(db.DateTime, nullable=True)
 

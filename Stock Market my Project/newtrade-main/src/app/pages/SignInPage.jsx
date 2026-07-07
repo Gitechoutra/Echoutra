@@ -311,8 +311,7 @@ export function SignInPage() {
       // Fetch full user profile via GET /authentication/me
       let userData = null;
       try {
-        const meRes  = await fetch(`${API_BASE}/authentication/login`, {
-          method: "POST",
+        const meRes  = await fetch(`${API_BASE}/authentication/me`, {
           headers: { Authorization: `Bearer ${access_token}` },
         });
         const meData = await meRes.json();
@@ -426,6 +425,11 @@ export function SignInPage() {
             </div>
 
             <div className="p-6">
+              {params.get("verified") === "1" && (
+                <div className="flex items-center gap-2 px-3 py-2.5 mb-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-400">
+                  <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" /> Email verified! Please sign in with your credentials.
+                </div>
+              )}
               {/* ── Login Form ── */}
               <form onSubmit={handleSubmit} className="space-y-4">
                 {/* Email */}

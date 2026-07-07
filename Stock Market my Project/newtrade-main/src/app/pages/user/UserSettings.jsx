@@ -47,6 +47,24 @@ function Toast({ msg, ok, onClose }) {
   );
 }
 
+/* ── KYC text field (module scope so it keeps a stable identity across renders —
+   defining it inside UserSettings() would recreate the component every keystroke
+   and remount the <input>, losing focus/cursor position) ─────────────────────── */
+function KycField({ label, field, type = "text", placeholder = "", value, onChange }) {
+  return (
+    <div>
+      <label className="text-xs text-gray-500 mb-1.5 block">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(field, e.target.value)}
+        placeholder={placeholder}
+        className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-cyan-500/30 transition-colors"
+      />
+    </div>
+  );
+}
+
 /* ── Load Razorpay script dynamically ──────────────────────────────────────── */
 function loadRazorpay() {
   return new Promise((resolve) => {
@@ -122,6 +140,9 @@ export function UserSettings() {
     id_document_back_url: "", selfie_url: "",
     address_document_type: "UTILITY_BILL", address_document_url: "",
   });
+  const handleKycFieldChange = useCallback((field, value) => {
+    setKycForm(p => ({ ...p, [field]: value }));
+  }, []);
 
   /* ── Wallet ──────────────────────────────────────────────────────────────── */
   const [wallet,             setWallet]             = useState(null);
@@ -686,15 +707,6 @@ export function UserSettings() {
     </button>
   );
 
-  const InputField = ({ label, field, type = "text", placeholder = "" }) => (
-    <div>
-      <label className="text-xs text-gray-500 mb-1.5 block">{label}</label>
-      <input type={type} value={kycForm[field]} onChange={(e) => setKycForm(p => ({ ...p, [field]: e.target.value }))}
-        placeholder={placeholder}
-        className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-cyan-500/30 transition-colors" />
-    </div>
-  );
-
   const fmtTxAmt = (tx) => {
     const type   = (tx.transaction_type || "").toUpperCase();
     const credit = type === "DEPOSIT" || type === "REFUND";
@@ -1103,12 +1115,12 @@ export function UserSettings() {
                         <div>
                           <p className="text-xs text-gray-500 mb-3 uppercase tracking-wider font-semibold">Personal Information</p>
                           <div className="grid sm:grid-cols-2 gap-3">
-                            <InputField label="Legal First Name *" field="legal_first_name" placeholder="As on ID document" />
-                            <InputField label="Legal Last Name *"  field="legal_last_name"  placeholder="As on ID document" />
-                            <InputField label="Date of Birth *"    field="date_of_birth"    type="date" />
-                            <InputField label="Nationality"        field="nationality"       placeholder="e.g. Indian" />
-                            <InputField label="Country of Residence" field="country_of_residence" placeholder="e.g. India" />
-                            <InputField label="Tax ID (PAN / SSN)" field="tax_id"           placeholder="Optional" />
+                            <KycField label="Legal First Name *" field="legal_first_name" placeholder="As on ID document" value={kycForm.legal_first_name} onChange={handleKycFieldChange} />
+                            <KycField label="Legal Last Name *"  field="legal_last_name"  placeholder="As on ID document" value={kycForm.legal_last_name} onChange={handleKycFieldChange} />
+                            <KycField label="Date of Birth *"    field="date_of_birth"    type="date" value={kycForm.date_of_birth} onChange={handleKycFieldChange} />
+                            <KycField label="Nationality"        field="nationality"       placeholder="e.g. Indian" value={kycForm.nationality} onChange={handleKycFieldChange} />
+                            <KycField label="Country of Residence" field="country_of_residence" placeholder="e.g. India" value={kycForm.country_of_residence} onChange={handleKycFieldChange} />
+                            <KycField label="Tax ID (PAN / SSN)" field="tax_id"           placeholder="Optional" value={kycForm.tax_id} onChange={handleKycFieldChange} />
                           </div>
                         </div>
                         <div>
@@ -1121,17 +1133,17 @@ export function UserSettings() {
                                 {DOC_TYPES.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
                               </select>
                             </div>
-                            <InputField label="Document Number *" field="id_document_number" placeholder="e.g. A1234567" />
-                            <InputField label="Expiry Date" field="id_document_expiry" type="date" />
+                            <KycField label="Document Number *" field="id_document_number" placeholder="e.g. A1234567" value={kycForm.id_document_number} onChange={handleKycFieldChange} />
+                            <KycField label="Expiry Date" field="id_document_expiry" type="date" value={kycForm.id_document_expiry} onChange={handleKycFieldChange} />
                           </div>
                         </div>
                         <div>
                           <p className="text-xs text-gray-500 mb-3 uppercase tracking-wider font-semibold">Document URLs</p>
                           <p className="text-xs text-gray-600 mb-3">Upload documents to Google Drive / Dropbox and paste the public URL below.</p>
                           <div className="grid sm:grid-cols-2 gap-3">
-                            <InputField label="ID Front Image URL *" field="id_document_front_url" placeholder="https://..." />
-                            <InputField label="ID Back Image URL"    field="id_document_back_url"  placeholder="https://..." />
-                            <InputField label="Selfie URL"           field="selfie_url"             placeholder="https://..." />
+                            <KycField label="ID Front Image URL *" field="id_document_front_url" placeholder="https://..." value={kycForm.id_document_front_url} onChange={handleKycFieldChange} />
+                            <KycField label="ID Back Image URL"    field="id_document_back_url"  placeholder="https://..." value={kycForm.id_document_back_url} onChange={handleKycFieldChange} />
+                            <KycField label="Selfie URL"           field="selfie_url"             placeholder="https://..." value={kycForm.selfie_url} onChange={handleKycFieldChange} />
                             <div>
                               <label className="text-xs text-gray-500 mb-1.5 block">Address Proof Type</label>
                               <select value={kycForm.address_document_type} onChange={(e) => setKycForm(p => ({ ...p, address_document_type: e.target.value }))}
@@ -1141,7 +1153,7 @@ export function UserSettings() {
                                 <option value="TAX_DOCUMENT">Tax Document</option>
                               </select>
                             </div>
-                            <InputField label="Address Proof URL" field="address_document_url" placeholder="https://..." />
+                            <KycField label="Address Proof URL" field="address_document_url" placeholder="https://..." value={kycForm.address_document_url} onChange={handleKycFieldChange} />
                           </div>
                         </div>
                         <button type="submit" disabled={submittingKyc}

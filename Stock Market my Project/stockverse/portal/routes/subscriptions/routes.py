@@ -348,6 +348,20 @@ class AdminUpgradeUser(Resource):
             log.after_state    = {'plan': plan.plan_name}
             log.save()
 
+            # ── Notify the upgraded user (best-effort) ────────────────────────
+            from portal.helpers.notify import notify_user
+            from portal.models.notifications import NotificationType, NotificationPriority
+            notify_user(
+                user_id,
+                NotificationType.SUBSCRIPTION,
+                title=f"You've been upgraded to {plan.plan_name}!",
+                body=f"Your account now has {plan.plan_name} access. Enjoy your new features.",
+                priority=NotificationPriority.HIGH,
+                action_url="/user/settings",
+                reference_type="SUBSCRIPTION",
+                reference_id=sub.subscription_id,
+            )
+
             return jsonify(bool=True, status=200, response={
                 'message':         f'User {user_id} upgraded to {plan.plan_name}.',
                 'subscription_id': sub.subscription_id,

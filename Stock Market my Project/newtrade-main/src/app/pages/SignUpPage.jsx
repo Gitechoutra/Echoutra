@@ -17,6 +17,12 @@ import {
   Smartphone,
   Plus,
   ShieldCheck,
+  Phone,
+  Calendar,
+  MapPin,
+  Globe,
+  Gift,
+  AtSign,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
@@ -72,7 +78,11 @@ export function SignUpPage() {
   const [plan,       setPlan]       = useState("pro");
   const [experience, setExperience] = useState("intermediate");
   const [tags,       setTags]       = useState(["US Stocks", "ETFs"]);
-  const [form,       setForm]       = useState({ name: "", email: "", password: "" });
+  const [form,       setForm]       = useState({
+    firstName: "", lastName: "", email: "", mobile: "", dob: "",
+    username: "", password: "", confirmPassword: "",
+    country: "", state: "", city: "", referralCode: "", acceptTerms: false,
+  });
   const [otp,        setOtp]        = useState(Array(6).fill(""));
 
   /* ── Payment state ── */
@@ -188,6 +198,20 @@ export function SignUpPage() {
 
   /* Step 0 — Register */
   const doRegister = async () => {
+    // ── Client-side validation ──────────────────────────────────────────
+    const required = {
+      firstName: "First name", lastName: "Last name", email: "Email address",
+      mobile: "Mobile number", dob: "Date of birth", username: "Username",
+      password: "Password", confirmPassword: "Confirm password",
+      country: "Country", state: "State", city: "City",
+    };
+    for (const [key, label] of Object.entries(required)) {
+      if (!String(form[key] || "").trim()) { setError(`${label} is required.`); return; }
+    }
+    if (form.password.length < 8) { setError("Password must be at least 8 characters."); return; }
+    if (form.password !== form.confirmPassword) { setError("Passwords do not match."); return; }
+    if (!form.acceptTerms) { setError("Please accept the Terms & Conditions."); return; }
+
     setLoading(true);
     setError("");
     try {
@@ -195,11 +219,20 @@ export function SignUpPage() {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          full_name: form.name.trim(),
-          username:  form.email.split("@")[0].replace(/[^a-zA-Z0-9_]/g, "") + "_" + Date.now().toString().slice(-4),
-          email:     form.email.trim().toLowerCase(),
-          password:  form.password,
-          role_name: "USER",
+          first_name:     form.firstName.trim(),
+          last_name:      form.lastName.trim(),
+          full_name:      `${form.firstName.trim()} ${form.lastName.trim()}`.trim(),
+          username:       form.username.trim(),
+          email:          form.email.trim().toLowerCase(),
+          password:       form.password,
+          mobile_number:  form.mobile.trim(),
+          date_of_birth:  form.dob,               // YYYY-MM-DD from <input type="date">
+          country:        form.country.trim(),
+          state:          form.state.trim(),
+          city:           form.city.trim(),
+          referral_code:  form.referralCode.trim() || undefined,
+          terms_accepted: form.acceptTerms,
+          role_name:      "USER",
         }),
       });
       const data = await res.json();
@@ -276,7 +309,11 @@ export function SignUpPage() {
       });
       const data = await res.json();
       if (!data.bool) { setError(data.response?.message || "Invalid OTP."); return; }
-      navigate("/user");
+      // Don't auto-sign-in after signup — clear the registration tokens and
+      // require the user to log in explicitly with their credentials.
+      localStorage.removeItem("access_token");
+      localStorage.removeItem("refresh_token");
+      navigate("/signin?verified=1");
     } catch {
       setError("Network error. Please try again.");
     } finally {
@@ -795,14 +832,27 @@ export function SignUpPage() {
               <h2 className="text-xl font-bold text-white mb-1">Create your account</h2>
               <p className="text-sm text-gray-500 mb-6">Join 2.4M+ traders on TradeFlow</p>
               <div className="space-y-4">
-                <div>
-                  <label className="text-xs text-gray-500 mb-1.5 block">Full Name</label>
-                  <div className="relative">
-                    <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
-                    <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Alex Johnson"
-                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                {/* First + Last name */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1.5 block">First Name</label>
+                    <div className="relative">
+                      <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <input type="text" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} placeholder="Alex"
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1.5 block">Last Name</label>
+                    <div className="relative">
+                      <User className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <input type="text" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} placeholder="Johnson"
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                    </div>
                   </div>
                 </div>
+
+                {/* Email */}
                 <div>
                   <label className="text-xs text-gray-500 mb-1.5 block">Email Address</label>
                   <div className="relative">
@@ -811,6 +861,43 @@ export function SignUpPage() {
                       className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
                   </div>
                 </div>
+
+                {/* Mobile + DOB */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1.5 block">Mobile Number</label>
+                    <div className="relative">
+                      <Phone className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <input type="tel" value={form.mobile}
+                        onChange={(e) => setForm({ ...form, mobile: e.target.value.replace(/[^\d+]/g, "").slice(0, 15) })}
+                        placeholder="9876543210"
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1.5 block">Date of Birth</label>
+                    <div className="relative">
+                      <Calendar className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600 pointer-events-none" />
+                      <input type="date" value={form.dob} onChange={(e) => setForm({ ...form, dob: e.target.value })}
+                        max={new Date().toISOString().split("T")[0]}
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-3 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors [color-scheme:dark]" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Username */}
+                <div>
+                  <label className="text-xs text-gray-500 mb-1.5 block">Username</label>
+                  <div className="relative">
+                    <AtSign className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                    <input type="text" value={form.username}
+                      onChange={(e) => setForm({ ...form, username: e.target.value.replace(/[^a-zA-Z0-9_]/g, "") })}
+                      placeholder="alex_johnson"
+                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                  </div>
+                </div>
+
+                {/* Password + Confirm */}
                 <div>
                   <label className="text-xs text-gray-500 mb-1.5 block">Password</label>
                   <div className="relative">
@@ -829,10 +916,66 @@ export function SignUpPage() {
                     </div>
                   )}
                 </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1.5 block">Confirm Password</label>
+                  <div className="relative">
+                    <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                    <input type={showPw ? "text" : "password"} value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} placeholder="Re-enter your password"
+                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                  </div>
+                  {form.confirmPassword && form.password !== form.confirmPassword && (
+                    <p className="text-xs text-red-400 mt-1.5">Passwords do not match</p>
+                  )}
+                </div>
+
+                {/* Country + State + City */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1.5 block">Country</label>
+                    <div className="relative">
+                      <Globe className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <input type="text" value={form.country} onChange={(e) => setForm({ ...form, country: e.target.value })} placeholder="India"
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1.5 block">State</label>
+                    <div className="relative">
+                      <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                      <input type="text" value={form.state} onChange={(e) => setForm({ ...form, state: e.target.value })} placeholder="Telangana"
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-500 mb-1.5 block">City</label>
+                  <div className="relative">
+                    <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                    <input type="text" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} placeholder="Hyderabad"
+                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                  </div>
+                </div>
+
+                {/* Referral code (optional) */}
+                <div>
+                  <label className="text-xs text-gray-500 mb-1.5 block">Referral Code <span className="text-gray-700">(optional)</span></label>
+                  <div className="relative">
+                    <Gift className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
+                    <input type="text" value={form.referralCode}
+                      onChange={(e) => setForm({ ...form, referralCode: e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "") })}
+                      placeholder="e.g. ABCD1234"
+                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors" />
+                  </div>
+                </div>
+
+                {/* Terms */}
                 <div className="flex items-start gap-2 pt-1">
-                  <input type="checkbox" id="terms" className="mt-0.5 accent-cyan-500" required />
+                  <input type="checkbox" id="terms" checked={form.acceptTerms}
+                    onChange={(e) => setForm({ ...form, acceptTerms: e.target.checked })}
+                    className="mt-0.5 accent-cyan-500" />
                   <label htmlFor="terms" className="text-xs text-gray-500">
-                    I agree to the <span className="text-cyan-400">Terms of Service</span> and{" "}
+                    I accept the <span className="text-cyan-400">Terms &amp; Conditions</span>,{" "}
+                    <span className="text-cyan-400">Terms of Service</span> and{" "}
                     <span className="text-cyan-400">Privacy Policy</span>
                   </label>
                 </div>
@@ -951,7 +1094,7 @@ export function SignUpPage() {
                 {loading ? (
                   <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                     {step === 0 ? "Creating account..." : "Verifying..."}</>
-                ) : step === 3 ? <>Launch Dashboard <ArrowRight className="w-4 h-4" /></>
+                ) : step === 3 ? <>Continue to Sign In <ArrowRight className="w-4 h-4" /></>
                 : <>Continue <ArrowRight className="w-4 h-4" /></>}
               </button>
             </div>

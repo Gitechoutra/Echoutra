@@ -371,10 +371,26 @@ class CreateStock(Resource):
             # Create analytics record
             analytics = StockAnalytics(); analytics.stock_id = stock.stock_id; analytics.save()
 
+            # ── Notify all users about the new listing (best-effort) ──────────
+            from portal.helpers.notify import broadcast_to_all
+            from portal.models.notifications import NotificationType, NotificationPriority
+            notified = broadcast_to_all(
+                NotificationType.STOCK_LISTED,
+                title=f"New stock listed: {ticker}",
+                body=f"{stock.company_name} ({ticker}) is now available to trade on TradeFlow.",
+                priority=NotificationPriority.MEDIUM,
+                action_url=f"/user/stock/{ticker}",
+                icon=stock.logo_url,
+                reference_type="STOCK",
+                reference_id=stock.stock_id,
+                exclude_user_id=get_jwt().get('user_id'),
+            )
+
             return jsonify(bool=True, status=200, response={
-                'message':  'Stock created.',
-                'stock_id': stock.stock_id,
-                'ticker':   ticker,
+                'message':       'Stock created.',
+                'stock_id':      stock.stock_id,
+                'ticker':        ticker,
+                'users_notified':notified,
             })
 
         except Exception as e:

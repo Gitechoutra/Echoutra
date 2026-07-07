@@ -92,22 +92,37 @@ export function AuthProvider({ children }) {
         if (meData.bool) setUser(meData.response);
         return data.response.access_token;
       } else {
+        // Refresh token itself was rejected (expired/invalid) — session is genuinely over.
         clearAuth();
         return null;
       }
     } catch (err) {
-      console.error("[Auth] refreshToken error:", err);
-      clearAuth();
+      // Network hiccup, not an auth rejection — keep the existing tokens and
+      // retry later instead of silently signing the user out.
+      console.error("[Auth] refreshToken network error (session kept):", err);
       return null;
     }
   }, []); // eslint-disable-line
 
-  // 
+  //
   //  On mount — restore session
-  // 
+  //
   useEffect(() => {
     fetchMe();
   }, [fetchMe]);
+
+  //
+  //  Proactive silent refresh — keeps the session alive in the background
+  //  so the access token never silently expires while the user is active.
+  //  The user should only ever be signed out by clicking "Sign Out", not by
+  //  a token quietly expiring mid-session.
+  //
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (localStorage.getItem("access_token")) refreshToken();
+    }, 20 * 60 * 1000); // every 20 minutes — well under the 2h access token TTL
+    return () => clearInterval(interval);
+  }, [refreshToken]);
 
   // 
   //  login — called by SignInPage after successful login response
