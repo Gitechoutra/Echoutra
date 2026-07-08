@@ -30,6 +30,7 @@ MarkupSafe==3.0.3
 msgspec==0.21.1
 PyMySQL==1.1.1
 cryptography==49.0.0
+pip-system-certs==5.3          # makes requests trust the Windows cert store (fixes SSL to api.twelvedata.com behind AV/firewall TLS inspection)
 pycryptodome==3.23.0
 PyJWT==2.12.1
 pyodbc==5.3.0

@@ -131,6 +131,10 @@ export function AdminAllStocks() {
   const [updateError,     setUpdateError]     = useState("");
   const [updateSuccess,   setUpdateSuccess]   = useState(false);
 
+  /* ── Live market data (Twelve Data) ── */
+  const [liveRefreshing, setLiveRefreshing] = useState(false);
+  const [liveMsg,        setLiveMsg]        = useState("");
+
   /* ── Fetch ── */
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -359,6 +363,43 @@ export function AdminAllStocks() {
     finally { setUpdateLoading(false); }
   };
 
+  /* ── Live: refresh ALL stock prices from Twelve Data ── */
+  const handleRefreshLive = async () => {
+    setLiveRefreshing(true); setLiveMsg(""); setError("");
+    try {
+      const res  = await fetch(`${API_BASE}/stocks/refresh_live`, { method: "POST", headers: authHdr() });
+      const data = await res.json();
+      if (!data.bool) { setError(data.response?.message || "Live refresh failed."); return; }
+      setLiveMsg(data.response?.message || "Live prices updated.");
+      await fetchData();
+      setTimeout(() => setLiveMsg(""), 6000);
+    } catch { setError("Network error while refreshing live prices."); }
+    finally { setLiveRefreshing(false); }
+  };
+
+  /* ── Live: fetch ONE stock's price from Twelve Data (inside update modal) ── */
+  const handleFetchLiveOne = async () => {
+    if (!updateTarget?.stock_id) { setUpdateError("Stock ID missing."); return; }
+    setUpdateLoading(true); setUpdateError("");
+    try {
+      const res  = await fetch(`${API_BASE}/stocks/${updateTarget.stock_id}/refresh_price`, {
+        method: "POST", headers: authHdr(),
+      });
+      const data = await res.json();
+      if (!data.bool) { setUpdateError(data.response?.message || "Live fetch failed."); return; }
+      const s = data.response?.stock || {};
+      // Prefill the modal inputs with the freshly fetched live values
+      if (s.current_price   != null) setUpdatePrice(String(s.current_price));
+      if (s.previous_close  != null) setUpdatePrevClose(String(s.previous_close));
+      if (s.day_high        != null) setUpdateHigh(String(s.day_high));
+      if (s.day_low         != null) setUpdateLow(String(s.day_low));
+      if (s.volume          != null) setUpdateVolume(String(s.volume));
+      setUpdateSuccess(true);
+      setTimeout(() => { setUpdateSuccess(false); fetchData(); }, 1200);
+    } catch { setUpdateError("Network error."); }
+    finally { setUpdateLoading(false); }
+  };
+
   /* ── Derived ── */
   const allSectors   = ["All", ...Array.from(new Set(stocks.map(s => s.sector).filter(Boolean))).sort()];
   const allExchanges = ["All", ...Array.from(new Set(stocks.map(s => s.exchange).filter(s => s !== "—"))).sort()];
@@ -407,6 +448,12 @@ export function AdminAllStocks() {
               ₹{(totalPlatformValue/1e5).toFixed(2)}L
             </span>
           </div>
+          <button onClick={handleRefreshLive} disabled={liveRefreshing}
+            title="Pull the latest live prices from the market data provider"
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-600/15 border border-emerald-500/30 rounded-xl text-sm font-medium text-emerald-400 hover:bg-emerald-600/25 transition-colors disabled:opacity-60">
+            <RefreshCw className={`w-4 h-4 ${liveRefreshing ? "animate-spin" : ""}`} />
+            {liveRefreshing ? "Fetching live…" : "Refresh Live Prices"}
+          </button>
           <button onClick={() => setShowAddModal(true)}
             className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-600 to-purple-700 rounded-xl text-sm font-medium text-white hover:opacity-90 transition-opacity shadow-lg shadow-violet-500/20">
             <Plus className="w-4 h-4" /> Add Stock
@@ -417,6 +464,11 @@ export function AdminAllStocks() {
       {error && (
         <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />{error}
+        </div>
+      )}
+      {liveMsg && (
+        <div className="flex items-center gap-2 px-4 py-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-sm text-emerald-400">
+          <Check className="w-4 h-4 flex-shrink-0" />{liveMsg}
         </div>
       )}
 
@@ -738,6 +790,12 @@ export function AdminAllStocks() {
                     </div>
                   )}
 
+                  <button onClick={handleFetchLiveOne} disabled={updateLoading}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 bg-emerald-600/15 border border-emerald-500/30 rounded-xl text-sm font-medium text-emerald-400 hover:bg-emerald-600/25 transition-colors disabled:opacity-60">
+                    <RefreshCw className={`w-4 h-4 ${updateLoading ? "animate-spin" : ""}`} />
+                    Fetch Live Price from Market
+                  </button>
+
                   <div className="flex gap-3 pt-1">
                     <button onClick={() => setShowUpdateModal(false)}
                       className="flex-1 py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-sm text-gray-400 hover:text-white">
@@ -747,7 +805,7 @@ export function AdminAllStocks() {
                       className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
                       {updateLoading
                         ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Updating…</>
-                        : <><DollarSign className="w-4 h-4" />Update Price</>}
+                        : <><DollarSign className="w-4 h-4" />Save Price</>}
                     </button>
                   </div>
                 </div>

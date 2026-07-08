@@ -58,6 +58,7 @@ def init_app(app):
         from .system_health_logs import SystemHealthLogs, HealthStatus, ServiceType
         from .kyc_verifications import KYCVerifications, KYCStatus, DocumentType
         from .payment_transactions import PaymentTransactions, PaymentStatus
+        from .support_messages import SupportMessages, SupportSenderRole
 
 
 

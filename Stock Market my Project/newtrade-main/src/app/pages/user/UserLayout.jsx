@@ -19,6 +19,7 @@ import {
   Receipt,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { SupportChatWidget } from "../../components/SupportChatWidget";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken  = () => localStorage.getItem("access_token");
@@ -687,6 +688,9 @@ export function UserLayout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Floating support chat */}
+      <SupportChatWidget />
 
       <style>{`@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}`}</style>
     </div>

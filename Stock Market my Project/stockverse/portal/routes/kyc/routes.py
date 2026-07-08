@@ -259,6 +259,32 @@ class AdminKYCReview(Resource):
             log.after_state    = {'kyc_status': kyc.kyc_status}
             log.save()
 
+            # ── Notify the user of the KYC decision (best-effort) ─────────────
+            from portal.helpers.notify import notify_user
+            from portal.models.notifications import NotificationType, NotificationPriority
+            if action == 'APPROVE':
+                notify_user(
+                    kyc.user_id,
+                    NotificationType.KYC_APPROVED,
+                    title="KYC Approved ✅",
+                    body="Your identity verification has been approved. Your account is now fully verified.",
+                    priority=NotificationPriority.HIGH,
+                    action_url="/user/settings",
+                    reference_type="KYC",
+                    reference_id=kyc.kyc_id,
+                )
+            else:  # REJECT
+                notify_user(
+                    kyc.user_id,
+                    NotificationType.KYC_REJECTED,
+                    title="KYC Rejected ❌",
+                    body=f"Your KYC submission was rejected. Reason: {kyc.rejection_reason} Please re-submit your documents.",
+                    priority=NotificationPriority.HIGH,
+                    action_url="/user/settings",
+                    reference_type="KYC",
+                    reference_id=kyc.kyc_id,
+                )
+
             return jsonify(bool=True, status=200, response={
                 'message':   f'KYC {action.lower()}d successfully.',
                 'kyc_status':kyc.kyc_status,

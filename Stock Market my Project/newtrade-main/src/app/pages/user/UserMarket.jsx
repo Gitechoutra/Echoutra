@@ -33,9 +33,10 @@ export function UserMarket() {
     { n: "VIX",     v: "13.47",    c: "-2.34%", up: false },
   ]);
 
-  const fetchStocks = useCallback(async (pg = 1) => {
-    setLoading(true);
-    setError("");
+  // `silent` = background refresh (no spinner / no error flash) — used by the
+  // real-time polling loop so prices update live without a visible reload.
+  const fetchStocks = useCallback(async (pg = 1, silent = false) => {
+    if (!silent) { setLoading(true); setError(""); }
     try {
       const params = new URLSearchParams({ page: pg, per_page: 30 });
       if (search)                params.set("search", search);
@@ -46,7 +47,7 @@ export function UserMarket() {
       const res  = await fetch(`${API_BASE}/stocks/list?${params}`, { headers: authHdr() });
       const data = await res.json();
 
-      if (!data.bool) { setError(data.response?.message || "Failed to load stocks."); return; }
+      if (!data.bool) { if (!silent) setError(data.response?.message || "Failed to load stocks."); return; }
 
       const raw = data.response?.stocks || data.response?.data || [];
       setStocks(raw);
@@ -56,9 +57,9 @@ export function UserMarket() {
       const uniq = ["All", ...new Set(raw.map((s) => s.sector).filter(Boolean))];
       setSectors(uniq);
     } catch {
-      setError("Network error loading stocks.");
+      if (!silent) setError("Network error loading stocks.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [search, sector, sortBy, sortDir]);
 
@@ -100,6 +101,15 @@ export function UserMarket() {
     const t = setTimeout(() => { setPage(1); fetchStocks(1); }, 400);
     return () => clearTimeout(t);
   }, [search, sector, sortBy, sortDir]); // eslint-disable-line
+
+  // Real-time price polling — silently refresh the current page every 20s so
+  // admin-refreshed live prices show up on the user side without a manual reload.
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (localStorage.getItem("access_token")) fetchStocks(page, true);
+    }, 20000);
+    return () => clearInterval(id);
+  }, [page, fetchStocks]);
 
   const handleSort = (c) => {
     if (sortBy === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));

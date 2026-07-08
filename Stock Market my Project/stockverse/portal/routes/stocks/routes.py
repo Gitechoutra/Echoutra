@@ -339,7 +339,87 @@ class UpdateStockPrice(Resource):
             return jsonify(bool=False, status=500, response={'message': str(e)})
 
 
-# ── Create Stock (Admin)  
+# ── Live-data status (any authenticated user) ─────────────────────────────────
+
+@ns.route('/live_status')
+class LiveDataStatus(Resource):
+    @ns.doc(description='Report whether live market-data (Twelve Data) is configured.')
+    @jwt_required()
+    def get(self):
+        from portal.helpers.market_data import is_configured
+        return jsonify(bool=True, status=200, response={'live_data_enabled': is_configured()})
+
+
+# ── Refresh ONE stock from the live provider (Admin) ──────────────────────────
+
+@ns.route('/<int:stock_id>/refresh_price')
+class RefreshStockPrice(Resource):
+    @ns.doc(description='[ADMIN] Pull the latest live quote for one stock from Twelve Data and store it.')
+    @jwt_required()
+    def post(self, stock_id):
+        try:
+            if get_jwt().get('role') != 'ADMIN':
+                return jsonify(bool=False, status=403, response={'message': 'Admin access required.'})
+
+            from portal.helpers.market_data import is_configured, refresh_stock
+            if not is_configured():
+                return jsonify(bool=False, status=400,
+                               response={'message': 'Live market data is not configured (missing TWELVE_DATA_API_KEY).'})
+
+            stock = Stocks.query.get(stock_id)
+            if not stock:
+                return jsonify(bool=False, status=404, response={'message': 'Stock not found.'})
+
+            result = refresh_stock(stock)
+            if not result['ok']:
+                return jsonify(bool=False, status=502, response={
+                    'message': f"Live fetch failed for {result['symbol']}: {result['error']}",
+                    'code':    result.get('code'),
+                })
+            stock.update()
+            return jsonify(bool=True, status=200, response={
+                'message':          f"Live price updated for {stock.ticker_symbol}.",
+                'stock':            _stock_dict(stock),
+                'last_price_update':str(stock.last_price_update),
+            })
+
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify(bool=False, status=500, response={'message': str(e)})
+
+
+# ── Refresh ALL active stocks from the live provider (Admin) ──────────────────
+
+@ns.route('/refresh_live')
+class RefreshAllLive(Resource):
+    @ns.doc(description='[ADMIN] Pull the latest live quotes for all active stocks from Twelve Data.')
+    @jwt_required()
+    def post(self):
+        try:
+            if get_jwt().get('role') != 'ADMIN':
+                return jsonify(bool=False, status=403, response={'message': 'Admin access required.'})
+
+            from portal.helpers.market_data import is_configured, refresh_stocks
+            if not is_configured():
+                return jsonify(bool=False, status=400,
+                               response={'message': 'Live market data is not configured (missing TWELVE_DATA_API_KEY).'})
+
+            from portal import db
+            stocks  = Stocks.query.filter_by(status=StockStatus.ACTIVE).all()
+            summary = refresh_stocks(stocks)
+            db.session.commit()   # persist all successful updates in one commit
+
+            msg = f"Refreshed {summary['updated']} of {summary['total']} stock(s) from live data."
+            if summary.get('rate_limited'):
+                msg += " Provider rate limit reached — please retry in a minute for the rest."
+            return jsonify(bool=True, status=200, response={'message': msg, **summary})
+
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify(bool=False, status=500, response={'message': str(e)})
+
+
+# ── Create Stock (Admin)
 
 @ns.route('/create')
 class CreateStock(Resource):

@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "motion/react";
 import {
   Search, TrendingUp, TrendingDown, Users, UserCheck,
   UserX, Crown, Eye, AlertCircle, RefreshCw, IndianRupee,
+  MessageSquare, Send, X, Headphones,
 } from "lucide-react";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
@@ -155,6 +156,14 @@ export function AdminUsers() {
   const [totalPages,   setTotalPages]   = useState(1);
   const [totalUsers,   setTotalUsers]   = useState(0);
 
+  /* ── Support chat ── */
+  const [chatUser,     setChatUser]     = useState(null);   // { id, name, email }
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatDraft,    setChatDraft]    = useState("");
+  const [chatSending,  setChatSending]  = useState(false);
+  const [chatUnread,   setChatUnread]   = useState({});     // { [user_id]: count }
+  const chatBottomRef  = useRef(null);
+
   const fetchUsers = useCallback(async (pageNum = 1, searchTerm = "", plan = "All", status = "All") => {
     setLoading(true);
     setError("");
@@ -241,6 +250,78 @@ export function AdminUsers() {
     if (sortBy === "return") return (b.totalReturnPct || 0) - (a.totalReturnPct || 0);
     return (a.name || "").localeCompare(b.name || "");
   });
+
+  /* ── Support chat: per-user unread badges (poll every 20s) ── */
+  const fetchChatUnread = useCallback(async () => {
+    if (!getToken()) return;
+    try {
+      const res  = await fetch(`${API_BASE}/support/admin/conversations`, { headers: authHdr() });
+      const data = await res.json();
+      if (data.bool) {
+        const map = {};
+        (data.response?.conversations || []).forEach((c) => { map[c.user_id] = c.unread_count; });
+        setChatUnread(map);
+      }
+    } catch { /* silent */ }
+  }, []);
+
+  useEffect(() => {
+    fetchChatUnread();
+    const id = setInterval(fetchChatUnread, 20000);
+    return () => clearInterval(id);
+  }, [fetchChatUnread]);
+
+  /* ── Support chat: open / fetch / send ── */
+  const fetchChatThread = useCallback(async (userId) => {
+    if (!getToken() || !userId) return;
+    try {
+      const res  = await fetch(`${API_BASE}/support/admin/thread/${userId}`, { headers: authHdr() });
+      const data = await res.json();
+      if (data.bool) {
+        setChatMessages(data.response?.messages || []);
+        setChatUnread((m) => ({ ...m, [userId]: 0 }));
+      }
+    } catch { /* silent */ }
+  }, []);
+
+  const openChat = (u, e) => {
+    if (e) e.stopPropagation();
+    setChatUser({ id: u.id, name: u.name, email: u.email });
+    setChatMessages([]);
+    setChatDraft("");
+    fetchChatThread(u.id);
+  };
+
+  // Poll the open thread every 4s so user messages arrive in real time
+  useEffect(() => {
+    if (!chatUser) return;
+    const id = setInterval(() => fetchChatThread(chatUser.id), 4000);
+    return () => clearInterval(id);
+  }, [chatUser, fetchChatThread]);
+
+  useEffect(() => { chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages]);
+
+  const sendReply = async () => {
+    const text = chatDraft.trim();
+    if (!text || chatSending || !chatUser) return;
+    setChatSending(true);
+    const optimistic = { message_id: `tmp-${Date.now()}`, sender_role: "ADMIN", message: text, created_on: new Date().toISOString() };
+    setChatMessages((m) => [...m, optimistic]);
+    setChatDraft("");
+    try {
+      const res  = await fetch(`${API_BASE}/support/admin/reply/${chatUser.id}`, {
+        method: "POST", headers: authHdr(), body: JSON.stringify({ message: text }),
+      });
+      const data = await res.json();
+      if (data.bool) fetchChatThread(chatUser.id);
+    } catch { /* keep optimistic */ }
+    finally { setChatSending(false); }
+  };
+
+  const fmtChatTime = (s) => {
+    try { return new Date(s).toLocaleString([], { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "short" }); }
+    catch { return ""; }
+  };
 
   const fmtValue = (v) => {
     if (v === null) return <span className="text-gray-700 text-xs animate-pulse">…</span>;
@@ -440,9 +521,24 @@ export function AdminUsers() {
                           </span>
                         </td>
                         <td className="px-5 py-4">
-                          <button className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-xs text-violet-300 hover:bg-violet-500/20 transition-all opacity-0 group-hover:opacity-100">
-                            <Eye className="w-3 h-3" /> View
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={(e) => { e.stopPropagation(); navigate(`/admin/users/${u.id}`); }}
+                              className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-xs text-violet-300 hover:bg-violet-500/20 transition-all opacity-0 group-hover:opacity-100">
+                              <Eye className="w-3 h-3" /> View
+                            </button>
+                            <button
+                              onClick={(e) => openChat(u, e)}
+                              title="Open support chat"
+                              className="relative flex items-center gap-1.5 px-3 py-1.5 bg-cyan-500/10 border border-cyan-500/20 rounded-lg text-xs text-cyan-300 hover:bg-cyan-500/20 transition-all">
+                              <MessageSquare className="w-3 h-3" /> Chat
+                              {chatUnread[u.id] > 0 && (
+                                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-[10px] font-bold text-white flex items-center justify-center border border-[#0C1220]">
+                                  {chatUnread[u.id] > 9 ? "9+" : chatUnread[u.id]}
+                                </span>
+                              )}
+                            </button>
+                          </div>
                         </td>
                       </motion.tr>
                     );
@@ -487,6 +583,82 @@ export function AdminUsers() {
           </button>
         </div>
       )}
+
+      {/* ══════════════════════════ SUPPORT CHAT MODAL ══════════════════════════ */}
+      <AnimatePresence>
+        {chatUser && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+            onClick={() => setChatUser(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 20 }} transition={{ duration: 0.18 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-[#0C1220] border border-cyan-500/20 rounded-2xl w-full max-w-lg h-[80vh] max-h-[640px] flex flex-col shadow-2xl overflow-hidden">
+
+              {/* Header */}
+              <div className="px-5 py-4 bg-gradient-to-r from-cyan-500/15 to-blue-600/10 border-b border-white/5 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-sm font-bold text-white">
+                  {(chatUser.name || "U").slice(0, 2).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-bold text-white truncate">{chatUser.name}</div>
+                  <div className="text-xs text-gray-500 truncate">{chatUser.email}</div>
+                </div>
+                <button onClick={() => setChatUser(null)} className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/10">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Messages */}
+              <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+                {chatMessages.length === 0 && (
+                  <div className="h-full flex flex-col items-center justify-center text-center px-6">
+                    <Headphones className="w-8 h-8 text-cyan-500/40 mb-2" />
+                    <p className="text-sm text-gray-400">No messages yet</p>
+                    <p className="text-xs text-gray-600 mt-1">Start the conversation with {chatUser.name}.</p>
+                  </div>
+                )}
+                {chatMessages.map((m) => {
+                  const admin = m.sender_role === "ADMIN";
+                  return (
+                    <div key={m.message_id} className={`flex ${admin ? "justify-end" : "justify-start"}`}>
+                      <div className={`max-w-[78%] px-3 py-2 rounded-2xl text-sm ${
+                        admin
+                          ? "bg-gradient-to-br from-cyan-500 to-blue-600 text-white rounded-br-sm"
+                          : "bg-[#141C30] border border-white/8 text-gray-200 rounded-bl-sm"
+                      }`}>
+                        <div className={`text-[10px] font-semibold mb-0.5 ${admin ? "text-white/70" : "text-cyan-400"}`}>
+                          {admin ? "You (Support)" : chatUser.name}
+                        </div>
+                        <div className="whitespace-pre-wrap break-words">{m.message}</div>
+                        <div className={`text-[10px] mt-1 ${admin ? "text-white/60" : "text-gray-500"}`}>{fmtChatTime(m.created_on)}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={chatBottomRef} />
+              </div>
+
+              {/* Composer */}
+              <div className="p-3 border-t border-white/5 flex items-center gap-2">
+                <input
+                  value={chatDraft}
+                  onChange={(e) => setChatDraft(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendReply(); } }}
+                  placeholder="Type your reply…"
+                  className="flex-1 bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-200 placeholder-gray-600 focus:outline-none focus:border-cyan-500/30"
+                />
+                <button
+                  onClick={sendReply}
+                  disabled={chatSending || !chatDraft.trim()}
+                  className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white disabled:opacity-50 hover:opacity-90 flex-shrink-0">
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

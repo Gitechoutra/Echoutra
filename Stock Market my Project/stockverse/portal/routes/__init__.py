@@ -32,5 +32,6 @@ def init_app():
     from .admin import routes
     from .transaction import routes
     from .payments import routes
+    from .support import routes
 
     
