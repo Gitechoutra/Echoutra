@@ -227,7 +227,7 @@ export function UserMarket() {
                   const changePct = parseFloat(s.price_change_percent || 0);
                   const up = changePct >= 0;
                   const myH = myHoldingMap[s.ticker_symbol];
-                  const mktCap = s.market_cap ? (s.market_cap >= 1e12 ? `$${(s.market_cap / 1e12).toFixed(1)}T` : `$${(s.market_cap / 1e9).toFixed(1)}B`) : "—";
+                  const mktCap = s.market_cap ? (s.market_cap >= 1e12 ? `₹${(s.market_cap / 1e12).toFixed(1)}T` : `₹${(s.market_cap / 1e9).toFixed(1)}B`) : "—";
                   const vol = s.volume ? (s.volume >= 1e6 ? `${(s.volume / 1e6).toFixed(1)}M` : `${s.volume}`) : "—";
                   return (
                     <motion.tr key={s.stock_id || s.ticker_symbol} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
@@ -248,7 +248,7 @@ export function UserMarket() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-5 py-3.5 text-sm font-medium text-white">${parseFloat(s.current_price || 0).toFixed(2)}</td>
+                      <td className="px-5 py-3.5 text-sm font-medium text-white">₹{parseFloat(s.current_price || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                       <td className="px-5 py-3.5">
                         <div className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${up ? "bg-emerald-500/10 text-emerald-400" : "bg-red-500/10 text-red-400"}`}>
                           {up ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
@@ -265,7 +265,7 @@ export function UserMarket() {
                           <div className="text-xs">
                             <div className="text-white">{parseFloat(myH.quantity || 0).toFixed(2)} shares</div>
                             <div className={parseFloat(myH.unrealized_pnl || 0) >= 0 ? "text-emerald-400" : "text-red-400"}>
-                              {parseFloat(myH.unrealized_pnl || 0) >= 0 ? "+" : "-"}${Math.abs(parseFloat(myH.unrealized_pnl || 0)).toFixed(0)}
+                              {parseFloat(myH.unrealized_pnl || 0) >= 0 ? "+" : "-"}₹{Math.abs(parseFloat(myH.unrealized_pnl || 0)).toLocaleString("en-IN", { maximumFractionDigits: 0 })}
                             </div>
                           </div>
                         ) : (

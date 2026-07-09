@@ -55,8 +55,8 @@ admin_list_parser.add_argument('from_date',type=str, required=False, location='a
 admin_list_parser.add_argument('to_date',  type=str, required=False, location='args')
 
 statement_parser = reqparse.RequestParser()
-statement_parser.add_argument('from_date', type=str, required=True,  location='args')
-statement_parser.add_argument('to_date',   type=str, required=True,  location='args')
+statement_parser.add_argument('from_date', type=str, required=False, location='args')
+statement_parser.add_argument('to_date',   type=str, required=False, location='args')
 
 reverse_parser = reqparse.RequestParser()
 reverse_parser.add_argument('reason', type=str, required=True, location='json')
@@ -269,8 +269,13 @@ class TransactionStatement(Resource):
             user_id = int(get_jwt_identity())
             args    = statement_parser.parse_args(strict=False)
 
-            from_date = datetime.fromisoformat(args['from_date'])
-            to_date   = datetime.fromisoformat(args['to_date'] + 'T23:59:59')
+            # Dates optional: default to the last 12 months so a plain
+            # "download statement" (no range) returns recent history instead of 400.
+            from datetime import timedelta as _td
+            to_date   = (datetime.fromisoformat(args['to_date'] + 'T23:59:59')
+                         if args.get('to_date') else datetime.now())
+            from_date = (datetime.fromisoformat(args['from_date'])
+                         if args.get('from_date') else to_date - _td(days=365))
 
             txns = (Transactions.query
                     .filter(
@@ -297,8 +302,8 @@ class TransactionStatement(Resource):
 
             return jsonify(bool=True, status=200, response={
                 'statement_period': {
-                    'from_date': args['from_date'],
-                    'to_date':   args['to_date'],
+                    'from_date': from_date.strftime('%Y-%m-%d'),
+                    'to_date':   to_date.strftime('%Y-%m-%d'),
                 },
                 'summary': {
                     'total_transactions': len(txns),

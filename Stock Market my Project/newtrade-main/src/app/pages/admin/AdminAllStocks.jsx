@@ -18,7 +18,8 @@ const authHdr  = () => ({
    Stocks model has `currency` column — default 'INR' for NSE/BSE,
    'USD' for NYSE/NASDAQ etc. We show the correct symbol per stock.
 ──────────────────────────────────────────────────────────────────────────── */
-const currSym = (currency) => (currency === "USD" ? "$" : "₹");
+// All stock prices are displayed in Indian Rupees (INR) across the platform.
+const currSym = () => "₹";
 const fmtPrice = (price, currency = "INR") => {
   if (!price && price !== 0) return "—";
   return `${currSym(currency)}${Number(price).toLocaleString("en-IN", {
@@ -37,7 +38,7 @@ const fmtMarketCap = (cap, currency = "INR") => {
 /* ── Static options (match Stocks model choices) ── */
 const ASSET_TYPES = ["STOCK","ETF","MUTUAL_FUND","CRYPTO","FOREX","INDEX"];
 const EXCHANGES   = ["NSE","BSE","NYSE","NASDAQ","LSE","TSX","ASX","OTHER"];
-const CURRENCIES  = ["INR","USD","GBP","EUR","JPY","AUD","CAD"];
+const CURRENCIES  = ["INR"];   // Platform trades exclusively in Indian Rupees (₹)
 const SECTORS     = [
   "Technology","Financials","Healthcare","Consumer Discretionary",
   "Consumer Staples","Energy","Industrials","Materials","Real Estate",
@@ -45,11 +46,11 @@ const SECTORS     = [
   "IT Services","AI","Other",
 ];
 
-/* Exchange → default currency mapping */
+/* Exchange → default currency mapping — everything trades in INR on this platform */
 const EXCHANGE_CURRENCY = {
   NSE: "INR", BSE: "INR",
-  NYSE: "USD", NASDAQ: "USD",
-  LSE: "GBP", TSX: "CAD", ASX: "AUD",
+  NYSE: "INR", NASDAQ: "INR",
+  LSE: "INR", TSX: "INR", ASX: "INR", OTHER: "INR",
 };
 
 const EMPTY_FORM = {
@@ -79,15 +80,11 @@ function Field({ label, required, error, hint, children }) {
 }
 
 /* ── Currency badge ── */
-function CurrBadge({ currency }) {
+function CurrBadge() {
   return (
-    <span className={`inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded font-bold ${
-      currency === "USD"
-        ? "bg-blue-500/15 text-blue-400"
-        : "bg-orange-500/15 text-orange-400"
-    }`}>
-      {currency === "USD" ? <DollarSign className="w-2.5 h-2.5" /> : <IndianRupee className="w-2.5 h-2.5" />}
-      {currency || "INR"}
+    <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded font-bold bg-orange-500/15 text-orange-400">
+      <IndianRupee className="w-2.5 h-2.5" />
+      INR
     </span>
   );
 }
@@ -435,7 +432,7 @@ export function AdminAllStocks() {
           <h1 className="text-xl font-bold text-white">All Stocks — Platform View</h1>
           <p className="text-sm text-gray-500 mt-0.5">
             Every stock listed on the platform with live holdings data.
-            Prices in the stock's own currency (₹ INR / $ USD).
+            All prices are shown in Indian Rupees (₹ INR).
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -691,9 +688,7 @@ export function AdminAllStocks() {
               <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
                 <div className="flex items-center gap-3">
                   <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">
-                    {updateTarget.currency === "USD"
-                      ? <DollarSign className="w-4 h-4 text-cyan-400" />
-                      : <IndianRupee className="w-4 h-4 text-cyan-400" />}
+                    <IndianRupee className="w-4 h-4 text-cyan-400" />
                   </div>
                   <div>
                     <div className="text-base font-bold text-white">
@@ -833,7 +828,7 @@ export function AdminAllStocks() {
                   <div>
                     <div className="text-base font-bold text-white">Add New Stock</div>
                     <div className="text-xs text-gray-500">
-                      Currency auto-sets from exchange (NSE/BSE → ₹INR, NYSE/NASDAQ → $USD)
+                      All stocks are priced in Indian Rupees (₹ INR)
                     </div>
                   </div>
                 </div>
@@ -918,26 +913,19 @@ export function AdminAllStocks() {
                             {EXCHANGES.map(ex => <option key={ex} value={ex}>{ex}</option>)}
                           </select>
                         </Field>
-                        <Field label="Currency" hint="₹ for INR, $ for USD">
+                        <Field label="Currency" hint="₹ INR only">
                           <div className="flex items-center gap-2">
-                            <select value={form.currency} onChange={e => updateForm("currency", e.target.value)}
-                              className={`flex-1 ${inputCls()}`}>
-                              {CURRENCIES.map(c => <option key={c} value={c}>{c}</option>)}
+                            <select value="INR" disabled
+                              className={`flex-1 ${inputCls()} opacity-70 cursor-not-allowed`}>
+                              <option value="INR">INR</option>
                             </select>
-                            <CurrBadge currency={form.currency} />
+                            <CurrBadge />
                           </div>
                         </Field>
                       </div>
                       {/* Currency note */}
-                      <div className={`mt-2 px-3 py-2 rounded-xl text-xs ${
-                        form.currency === "INR"
-                          ? "bg-orange-500/8 border border-orange-500/15 text-orange-300"
-                          : "bg-blue-500/8 border border-blue-500/15 text-blue-300"
-                      }`}>
-                        {form.currency === "INR"
-                          ? "₹ INR — Indian Rupee. Stock prices, P/E, market cap will display in ₹."
-                          : `${currSym(form.currency)} ${form.currency} — Stock prices will display in ${form.currency}. Wallet deposits remain in ₹ INR.`
-                        }
+                      <div className="mt-2 px-3 py-2 rounded-xl text-xs bg-orange-500/8 border border-orange-500/15 text-orange-300">
+                        ₹ INR — Indian Rupee. All stock prices, P/E and market cap are displayed in ₹.
                       </div>
                     </section>
 

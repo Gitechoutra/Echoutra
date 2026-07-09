@@ -446,6 +446,7 @@ class CreateStock(Resource):
             stock.ticker_symbol  = ticker
             stock.current_price  = args.get('current_price')
             stock.market_cap     = args.get('market_cap')
+            stock.currency       = 'INR'   # Platform trades exclusively in Indian Rupees
             stock.save()
 
             # Create analytics record

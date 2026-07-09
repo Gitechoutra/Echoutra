@@ -201,7 +201,47 @@ def _execute_market_order(order: TradeOrders, stock: Stocks, wallet: Wallets, po
             holding.last_traded_at = datetime.now(timezone.utc)
             holding.update()
 
+    # ── Re-value the portfolio from current market prices ─────────────────────
+    # FIX: previously the holding's market-value fields (current_price /
+    # current_value / unrealized_pnl) and the portfolio roll-up were never set
+    # on execution, so portfolio.current_value stayed 0 and platform AUM always
+    # showed ₹0 even after real trades. Recompute both here.
+    _revalue_portfolio(portfolio)
+
     return exec_rec
+
+
+def _revalue_portfolio(portfolio: Portfolios):
+    """Recompute every active holding's market value and the portfolio totals
+    from the stocks' current prices. Safe to call after any fill."""
+    holdings   = PortfolioHoldings.query.filter_by(
+        portfolio_id=portfolio.portfolio_id, is_active=True
+    ).all()
+    port_value    = Decimal('0')
+    port_invested = Decimal('0')
+    for h in holdings:
+        stock = Stocks.query.get(h.stock_id)
+        px    = Decimal(str(stock.current_price or 0)) if stock else Decimal('0')
+        qty   = Decimal(str(h.quantity or 0))
+        inv   = Decimal(str(h.total_invested or 0))
+        val   = qty * px
+        h.current_price          = px
+        h.current_value          = val
+        h.unrealized_pnl         = val - inv
+        h.unrealized_pnl_percent = ((val - inv) / inv * 100) if inv > 0 else Decimal('0')
+        port_value    += val
+        port_invested += inv
+    # Allocation % per holding (needs the portfolio total first)
+    for h in holdings:
+        h.allocation_percent = ((Decimal(str(h.current_value or 0)) / port_value) * 100) if port_value > 0 else Decimal('0')
+
+    portfolio.total_invested       = port_invested
+    portfolio.current_value        = port_value
+    portfolio.unrealized_pnl       = port_value - port_invested
+    portfolio.total_return         = port_value - port_invested
+    portfolio.total_return_percent = ((port_value - port_invested) / port_invested * 100) if port_invested > 0 else Decimal('0')
+    portfolio.total_holdings_count = len(holdings)
+    portfolio.update()
 
 
 # ── Place Order  ─────────
@@ -246,7 +286,15 @@ class PlaceOrder(Resource):
                 if not default_p:
                     default_p = Portfolios.query.filter_by(user_id=user_id, is_active=True).first()
                 if not default_p:
-                    return jsonify(bool=False, status=400, response={'message': 'No portfolio found. Create one first.'})
+                    # FIX: auto-create a default portfolio instead of erroring out.
+                    # New users (from signup) don't get a portfolio row, which
+                    # blocked their very first trade with "No portfolio found."
+                    default_p                = Portfolios()
+                    default_p.user_id        = user_id
+                    default_p.portfolio_name = 'My Portfolio'
+                    default_p.is_default     = True
+                    default_p.is_active      = True
+                    default_p.save()
                 portfolio_id = default_p.portfolio_id
             else:
                 portfolio = Portfolios.query.filter_by(portfolio_id=portfolio_id, user_id=user_id).first()

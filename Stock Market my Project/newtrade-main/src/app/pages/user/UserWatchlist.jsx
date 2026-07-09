@@ -289,7 +289,7 @@ export function UserWatchlist() {
                       </div>
                       <div className="flex items-center gap-3">
                         <div className="text-right">
-                          <div className="text-sm text-white">${parseFloat(s.current_price || 0).toFixed(2)}</div>
+                          <div className="text-sm text-white">₹{parseFloat(s.current_price || 0).toFixed(2)}</div>
                           <div className={`text-xs ${(s.price_change_percent || 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
                             {(s.price_change_percent || 0) >= 0 ? "+" : ""}{parseFloat(s.price_change_percent || 0).toFixed(2)}%
                           </div>
@@ -397,7 +397,7 @@ export function UserWatchlist() {
                   {/* Price + actions */}
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-lg font-bold text-white">${price.toFixed(2)}</div>
+                      <div className="text-lg font-bold text-white">₹{price.toFixed(2)}</div>
                       <div className={`flex items-center gap-1 text-xs ${up ? "text-emerald-400" : "text-red-400"}`}>
                         {up ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
                         {up ? "+" : "-"}{changeAbs.toFixed(2)} ({up ? "+" : ""}{changePct.toFixed(2)}%)

@@ -203,6 +203,17 @@ class SuspendUser(Resource):
             log.after_state      = {'status': UserStatus.SUSPENDED}
             log.save()
 
+            # Notify the user of the account action
+            from portal.helpers.notify import notify_user
+            from portal.models.notifications import NotificationType, NotificationPriority
+            notify_user(
+                user_id, NotificationType.ACCOUNT,
+                title="Account Suspended",
+                body=f"Your account has been suspended. Reason: {reason}",
+                priority=NotificationPriority.HIGH,
+                action_url="/user/settings", reference_type="ACCOUNT", reference_id=user_id,
+            )
+
             return jsonify(bool=True, status=200, response={'message': f'User {user_id} suspended.'})
 
         except Exception as e:
@@ -252,6 +263,24 @@ class UpdateUserStatus(Resource):
             log.before_state   = {'status': old_status}
             log.after_state    = {'status': new_status}
             log.save()
+
+            # Notify the user when their account status actually changes
+            if new_status != old_status:
+                from portal.helpers.notify import notify_user
+                from portal.models.notifications import NotificationType, NotificationPriority
+                messages = {
+                    UserStatus.ACTIVE:    ("Account Reactivated", "Your account is active again. Welcome back!"),
+                    UserStatus.SUSPENDED: ("Account Suspended", f"Your account has been suspended. {reason}".strip()),
+                    UserStatus.BANNED:    ("Account Banned", f"Your account has been banned. {reason}".strip()),
+                    UserStatus.PENDING:   ("Account Under Review", "Your account status is now pending review."),
+                }
+                if new_status in messages:
+                    title, body = messages[new_status]
+                    notify_user(
+                        user_id, NotificationType.ACCOUNT, title=title, body=body,
+                        priority=NotificationPriority.HIGH,
+                        action_url="/user/settings", reference_type="ACCOUNT", reference_id=user_id,
+                    )
 
             return jsonify(bool=True, status=200, response={'message': f'User status updated to {new_status}.'})
 

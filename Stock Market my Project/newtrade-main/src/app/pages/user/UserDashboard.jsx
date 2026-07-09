@@ -19,8 +19,8 @@ const authHdr  = () => ({ Authorization: `Bearer ${getToken()}` });
 const secColors = ["#06B6D4", "#8B5CF6", "#F59E0B", "#10B981"];
 
 
-const CURRENCY_SYMBOLS = { INR: "₹", USD: "$", GBP: "£", EUR: "€", JPY: "¥" };
-const currSym = (currency) => CURRENCY_SYMBOLS[(currency || "INR").toUpperCase()] || (currency || "₹");
+// All prices display in Indian Rupees (₹) across the platform.
+const currSym = () => "₹";
 
 const fmtMoney = (value, currency = "INR", { compact = false, decimals = 0 } = {}) => {
   const sym = currSym(currency);

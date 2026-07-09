@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
-  Users, DollarSign, Activity, TrendingUp, ArrowUpRight,
+  Users, IndianRupee, Activity, TrendingUp, ArrowUpRight,
   ChevronRight, Shield, RefreshCw, AlertCircle, BarChart2,
 } from "lucide-react";
 import {
@@ -17,10 +17,9 @@ const authHdr  = () => ({
   "Content-Type": "application/json",
 });
 
-/* Currency formatter: use ₹ for INR, $ for USD */
-const fmtCurrency = (val, currency = "INR") => {
-  const sym = currency === "USD" ? "$" : "₹";
-  return `${sym}${Number(val || 0).toLocaleString("en-IN", {
+/* Currency formatter: all amounts display in Indian Rupees (₹) */
+const fmtCurrency = (val) => {
+  return `₹${Number(val || 0).toLocaleString("en-IN", {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   })}`;
 };
@@ -258,7 +257,7 @@ export function AdminDashboard() {
       /* AUM is in INR (wallet/portfolio balances default to INR) */
       value:  fmtCurrency(totalAum, "INR"),
       sub:    "Platform assets under management",
-      icon:   DollarSign,
+      icon:   IndianRupee,
       color:  "from-cyan-500/20 to-cyan-500/5",
       border: "border-cyan-500/15",
       iconC:  "text-cyan-400",

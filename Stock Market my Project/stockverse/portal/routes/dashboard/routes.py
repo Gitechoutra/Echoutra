@@ -627,6 +627,7 @@ class AdminRecentUsers(Resource):
             limit = min(50, max(1, args['limit']))
 
             from portal.models.users import Users
+            from portal.models.user_subscriptions import UserSubscriptions
             users = (Users.query
                      .order_by(Users.created_on.desc())
                      .limit(limit).all())
@@ -643,7 +644,7 @@ class AdminRecentUsers(Resource):
                     'avatar_url':  u.profile.avatar_url if u.profile else None,
                     'plan':        (u.subscriptions
                                     .filter_by(status='ACTIVE')
-                                    .order_by(UserDashboardLayouts.updated_on.desc())
+                                    .order_by(UserSubscriptions.created_on.desc())
                                     .first()
                                     .plan.plan_tier
                                     if u.subscriptions.filter_by(status='ACTIVE').first()
@@ -779,12 +780,15 @@ class MonthlyReturns(Resource):
                     portfolio_id=args['portfolio_id'], user_id=user_id
                 ).first()
             else:
-                portfolio = Portfolios.query.filter_by(
-                    user_id=user_id, is_default=True, is_active=True
-                ).first()
+                # Prefer the default portfolio, but fall back to any active one —
+                # users may have a portfolio that was never flagged is_default.
+                portfolio = (Portfolios.query.filter_by(user_id=user_id, is_default=True, is_active=True).first()
+                             or Portfolios.query.filter_by(user_id=user_id, is_active=True).first())
 
+            # A user with no portfolio yet isn't an error — return empty data so
+            # the dashboard widget renders cleanly instead of failing.
             if not portfolio:
-                return jsonify(bool=False, status=404, response={'message': 'Portfolio not found.'})
+                return jsonify(bool=True, status=200, response={'monthly_returns': []})
 
             since = date.today().replace(day=1) - timedelta(days=30 * min(24, args['months']))
             perfs  = (PortfolioPerformanceHistory.query

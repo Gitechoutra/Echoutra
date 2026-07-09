@@ -389,11 +389,17 @@ class AdminAllSubscriptions(Resource):
             p.add_argument('per_page', type=int, default=20, location='args')
             p.add_argument('status',   type=str, required=False, location='args')
             p.add_argument('plan_id',  type=int, required=False, location='args')
+            p.add_argument('user_id',  type=int, required=False, location='args')
             args     = p.parse_args(strict=False)
             page     = max(1, args['page'])
             per_page = min(100, args['per_page'])
             query    = UserSubscriptions.query
 
+            # FIX: honor user_id so per-user lookups (e.g. the admin All Users
+            # list) return that user's subscription instead of everyone getting
+            # the single newest active subscription in the system.
+            if args.get('user_id'):
+                query = query.filter_by(user_id=args['user_id'])
             if args.get('status'):
                 query = query.filter(UserSubscriptions.status == args['status'].upper())
             if args.get('plan_id'):

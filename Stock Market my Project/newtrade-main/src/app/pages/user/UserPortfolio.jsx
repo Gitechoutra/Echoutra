@@ -35,7 +35,7 @@
 // };
 // const fmtPrice = (v, currency = "INR") =>
 //   currency === "USD"
-//     ? `$${Number(v || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+//     ? `₹${Number(v || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 //     : `₹${Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // /* ── Derive return when backend hasn't computed total_return_percent yet ── */
@@ -1309,10 +1309,10 @@ export function UserPortfolio() {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { l: "Portfolio Value", v: `$${totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}`,     sub: `${holdings.length} position${holdings.length !== 1 ? "s" : ""}`, up: null },
-          { l: "Total P&L",      v: `${totalPnl >= 0 ? "+" : ""}$${Math.abs(totalPnl).toFixed(2)}`,          sub: `${totalPnlPct >= 0 ? "+" : ""}${totalPnlPct.toFixed(2)}% all time`, up: totalPnl >= 0 },
-          { l: "Today's Change", v: `${dayPnl >= 0 ? "+" : ""}$${Math.abs(dayPnl).toFixed(2)}`,              sub: `${dayPnlPct >= 0 ? "+" : ""}${dayPnlPct.toFixed(2)}% today`,     up: dayPnl >= 0 },
-          { l: "Invested",       v: `$${totalInvested.toLocaleString("en", { maximumFractionDigits: 2 })}`,   sub: "Total cost basis",                                                up: null },
+          { l: "Portfolio Value", v: `₹${totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}`,     sub: `${holdings.length} position${holdings.length !== 1 ? "s" : ""}`, up: null },
+          { l: "Total P&L",      v: `${totalPnl >= 0 ? "+" : ""}₹${Math.abs(totalPnl).toFixed(2)}`,          sub: `${totalPnlPct >= 0 ? "+" : ""}${totalPnlPct.toFixed(2)}% all time`, up: totalPnl >= 0 },
+          { l: "Today's Change", v: `${dayPnl >= 0 ? "+" : ""}₹${Math.abs(dayPnl).toFixed(2)}`,              sub: `${dayPnlPct >= 0 ? "+" : ""}${dayPnlPct.toFixed(2)}% today`,     up: dayPnl >= 0 },
+          { l: "Invested",       v: `₹${totalInvested.toLocaleString("en", { maximumFractionDigits: 2 })}`,   sub: "Total cost basis",                                                up: null },
         ].map((card, i) => (
           <div key={i} className="bg-[#0C1220] border border-white/5 rounded-2xl p-4">
             <div className="text-xs text-gray-500 mb-1">{card.l}</div>
@@ -1356,10 +1356,10 @@ export function UserPortfolio() {
                     </linearGradient>
                   </defs>
                   <XAxis dataKey="date" tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+                  <YAxis tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ background: "#0C1220", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, fontSize: 11 }}
-                    formatter={v => [`$${parseFloat(v).toLocaleString()}`, "Value"]}
+                    formatter={v => [`₹${parseFloat(v).toLocaleString()}`, "Value"]}
                   />
                   <Area type="monotone" dataKey="close" stroke="#10B981" strokeWidth={2} fill="url(#pGrad)" dot={false} />
                 </AreaChart>
@@ -1521,13 +1521,13 @@ export function UserPortfolio() {
                         </div>
                       </td>
                       <td className="px-5 py-3.5 text-sm text-gray-300">{qty.toFixed(4)}</td>
-                      <td className="px-5 py-3.5 text-sm text-gray-300">${avgCost.toFixed(2)}</td>
-                      <td className="px-5 py-3.5 text-sm text-white">${currPx.toFixed(2)}</td>
+                      <td className="px-5 py-3.5 text-sm text-gray-300">₹{avgCost.toFixed(2)}</td>
+                      <td className="px-5 py-3.5 text-sm text-white">₹{currPx.toFixed(2)}</td>
                       <td className="px-5 py-3.5 text-sm text-white">
-                        ${mktVal.toLocaleString("en", { maximumFractionDigits: 2 })}
+                        ₹{mktVal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
                       </td>
                       <td className={`px-5 py-3.5 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
-                        {up ? "+" : "-"}${Math.abs(pnl).toFixed(2)}
+                        {up ? "+" : "-"}₹{Math.abs(pnl).toFixed(2)}
                       </td>
                       <td className="px-5 py-3.5">
                         <div className={`flex items-center gap-1 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>

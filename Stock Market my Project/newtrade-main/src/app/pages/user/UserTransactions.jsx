@@ -216,7 +216,7 @@ export function UserTransactions() {
 
   const fmtAmt = (v) => {
     const n = parseFloat(v || 0);
-    return `$${Math.abs(n).toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `₹${Math.abs(n).toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
   /* Client-side search filter */
@@ -315,10 +315,10 @@ export function UserTransactions() {
               <BarChart data={monthlyChart} barSize={16} barGap={4}>
                 <XAxis dataKey="month" tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} />
                 <YAxis tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false}
-                  tickFormatter={v => `$${(v / 1000).toFixed(0)}k`} />
+                  tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
                 <Tooltip
                   contentStyle={{ background: "#0C1220", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, fontSize: 11 }}
-                  formatter={(v, name) => [`$${parseFloat(v).toLocaleString("en", { maximumFractionDigits: 0 })}`, name === "buy" ? "Bought" : "Sold"]}
+                  formatter={(v, name) => [`₹${parseFloat(v).toLocaleString("en", { maximumFractionDigits: 0 })}`, name === "buy" ? "Bought" : "Sold"]}
                 />
                 <Bar dataKey="buy"  radius={[3, 3, 0, 0]} fill="#10B981" />
                 <Bar dataKey="sell" radius={[3, 3, 0, 0]} fill="#EF4444" />
@@ -491,7 +491,7 @@ export function UserTransactions() {
                           {t.quantity ? parseFloat(t.quantity).toFixed(4) : "—"}
                         </td>
                         <td className="px-5 py-3.5 text-sm text-gray-400">
-                          {t.price_per_unit ? `$${parseFloat(t.price_per_unit).toFixed(2)}` : "—"}
+                          {t.price_per_unit ? `₹${parseFloat(t.price_per_unit).toFixed(2)}` : "—"}
                         </td>
                         <td className="px-5 py-3.5 text-sm text-white">
                           {fmtAmt(t.amount)}
@@ -613,7 +613,7 @@ export function UserTransactions() {
                       ["Transaction ID",  selected.txn_id || selected.transaction_id || "—"],
                       ["Symbol",          selected.ticker_symbol || "—"],
                       ["Quantity",        selected.quantity ? parseFloat(selected.quantity).toFixed(4) : "—"],
-                      ["Price per Unit",  selected.price_per_unit ? `$${parseFloat(selected.price_per_unit).toFixed(4)}` : "—"],
+                      ["Price per Unit",  selected.price_per_unit ? `₹${parseFloat(selected.price_per_unit).toFixed(4)}` : "—"],
                       ["Gross Amount",    fmtAmt(selected.amount)],
                       ["Fee",             selected.fee ? fmtAmt(selected.fee) : "Free"],
                       ["Net Amount",      fmtAmt(selected.net_amount || selected.amount)],

@@ -433,7 +433,7 @@ export function UserStockDetail() {
                   </div>
                 </div>
                 <div className="flex items-end gap-3">
-                  <div className="text-3xl font-bold text-white">${parseFloat(stock.current_price||0).toFixed(2)}</div>
+                  <div className="text-3xl font-bold text-white">₹{parseFloat(stock.current_price||0).toFixed(2)}</div>
                   <div className={`flex items-center gap-1.5 pb-1 ${up?"text-emerald-400":"text-red-400"}`}>
                     {up?<TrendingUp className="w-4 h-4"/>:<TrendingDown className="w-4 h-4"/>}
                     <span className="text-base font-medium">{up?"+":""}{parseFloat(stock.price_change||0).toFixed(2)}</span>
@@ -459,9 +459,9 @@ export function UserStockDetail() {
                 <div className="grid grid-cols-4 gap-3">
                   {[
                     ["Shares",   parseFloat(myHolding.quantity||0).toFixed(2)],
-                    ["Avg Cost", `$${parseFloat(myHolding.average_buy_price||0).toFixed(2)}`],
-                    ["Mkt Value",`$${parseFloat(myHolding.current_value||0).toLocaleString("en",{maximumFractionDigits:0})}`],
-                    ["P&L",      `${parseFloat(myHolding.unrealized_pnl||0)>=0?"+":""}$${Math.abs(parseFloat(myHolding.unrealized_pnl||0)).toFixed(0)}`],
+                    ["Avg Cost", `₹${parseFloat(myHolding.average_buy_price||0).toFixed(2)}`],
+                    ["Mkt Value",`₹${parseFloat(myHolding.current_value||0).toLocaleString("en",{maximumFractionDigits:0})}`],
+                    ["P&L",      `${parseFloat(myHolding.unrealized_pnl||0)>=0?"+":""}₹${Math.abs(parseFloat(myHolding.unrealized_pnl||0)).toFixed(0)}`],
                   ].map(([l,v])=>(
                     <div key={l}>
                       <div className="text-xs text-gray-600">{l}</div>
@@ -490,8 +490,8 @@ export function UserStockDetail() {
                       <stop offset="95%" stopColor={up?"#10B981":"#EF4444"} stopOpacity={0}/>
                     </linearGradient></defs>
                     <XAxis dataKey="date" tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} interval="preserveStartEnd"/>
-                    <YAxis tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} domain={["auto","auto"]} tickFormatter={v=>`$${v.toFixed(0)}`}/>
-                    <Tooltip contentStyle={{background:"#0C1220",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,fontSize:11}} formatter={v=>[`$${v.toFixed(2)}`,"Price"]}/>
+                    <YAxis tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} domain={["auto","auto"]} tickFormatter={v=>`₹${v.toFixed(0)}`}/>
+                    <Tooltip contentStyle={{background:"#0C1220",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,fontSize:11}} formatter={v=>[`₹${v.toFixed(2)}`,"Price"]}/>
                     <Area type="monotone" dataKey="close" stroke={up?"#10B981":"#EF4444"} strokeWidth={2} fill="url(#sdGrad)" dot={false}/>
                   </AreaChart>
                 </ResponsiveContainer>
@@ -506,9 +506,9 @@ export function UserStockDetail() {
             <div className="flex items-center gap-2 mb-4"><Info className="w-4 h-4 text-gray-500"/><span className="text-sm font-medium text-white">Key Statistics</span></div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
-                ["52W High",  stock.week_52_high  ?`$${parseFloat(stock.week_52_high).toFixed(2)}` :"—"],
-                ["52W Low",   stock.week_52_low   ?`$${parseFloat(stock.week_52_low).toFixed(2)}`  :"—"],
-                ["Market Cap",stock.market_cap    ?`$${(stock.market_cap/1e9).toFixed(1)}B`        :"—"],
+                ["52W High",  stock.week_52_high  ?`₹${parseFloat(stock.week_52_high).toFixed(2)}` :"—"],
+                ["52W Low",   stock.week_52_low   ?`₹${parseFloat(stock.week_52_low).toFixed(2)}`  :"—"],
+                ["Market Cap",stock.market_cap    ?`₹${(stock.market_cap/1e9).toFixed(1)}B`        :"—"],
                 ["P/E Ratio", stock.pe_ratio      ?parseFloat(stock.pe_ratio).toFixed(1)            :"—"],
                 ["Volume",    stock.volume        ?(stock.volume>=1e6?`${(stock.volume/1e6).toFixed(1)}M`:`${stock.volume}`):"—"],
                 ["Sector",    stock.sector        ||"—"],
@@ -590,17 +590,17 @@ export function UserStockDetail() {
 
               {/* Order summary */}
               <div className="bg-[#141C30] rounded-xl p-3 space-y-2">
-                <div className="flex justify-between text-xs"><span className="text-gray-500">Market Price</span><span className="text-white">${parseFloat(stock.current_price||0).toFixed(2)}</span></div>
+                <div className="flex justify-between text-xs"><span className="text-gray-500">Market Price</span><span className="text-white">₹{parseFloat(stock.current_price||0).toFixed(2)}</span></div>
                 <div className="flex justify-between text-xs"><span className="text-gray-500">Quantity</span><span className="text-white">{qty||0} shares</span></div>
-                <div className="flex justify-between text-xs"><span className="text-gray-500">Commission (~0.1%)</span><span className="text-gray-400">${(total*0.001).toFixed(2)}</span></div>
+                <div className="flex justify-between text-xs"><span className="text-gray-500">Commission (~0.1%)</span><span className="text-gray-400">₹{(total*0.001).toFixed(2)}</span></div>
                 <div className="pt-2 border-t border-white/5 flex justify-between text-sm">
                   <span className="text-gray-400">Est. Total</span>
-                  <span className="text-white font-bold">${total.toLocaleString("en",{maximumFractionDigits:2})}</span>
+                  <span className="text-white font-bold">₹{total.toLocaleString("en",{maximumFractionDigits:2})}</span>
                 </div>
               </div>
 
               <div className="text-xs text-center text-gray-600">
-                Buying Power: <span className="text-white">${buyingPower.toLocaleString("en",{minimumFractionDigits:2})}</span>
+                Buying Power: <span className="text-white">₹{buyingPower.toLocaleString("en",{minimumFractionDigits:2})}</span>
               </div>
 
               {tradeType==="buy"&&(
@@ -664,8 +664,8 @@ export function UserStockDetail() {
                   ["Symbol",     stock.ticker_symbol],
                   ["Order Type", orderType.toUpperCase()],
                   ["Quantity",   `${qty} shares`],
-                  ["Price",      `$${execPx.toFixed(2)}`],
-                  ["Est. Total", `$${total.toLocaleString("en",{maximumFractionDigits:2})}`],
+                  ["Price",      `₹${execPx.toFixed(2)}`],
+                  ["Est. Total", `₹${total.toLocaleString("en",{maximumFractionDigits:2})}`],
                 ].map(([l,v])=>(
                   <div key={l} className="flex justify-between text-sm">
                     <span className="text-gray-500">{l}</span>

@@ -17,10 +17,9 @@ const authHdr  = () => ({
   "Content-Type": "application/json",
 });
 
-/* Currency helpers */
-const CURR_SYM = { INR: "₹", USD: "$", GBP: "£", EUR: "€" };
-const sym   = (c = "INR") => CURR_SYM[(c || "INR").toUpperCase()] || "₹";
-const fmtPx = (v, c = "INR") => `${sym(c)}${Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/* Currency helpers — all prices display in Indian Rupees (₹) */
+const sym   = () => "₹";
+const fmtPx = (v) => `₹${Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 /* Load Razorpay SDK once */
 function loadRazorpay() {
