@@ -47,8 +47,8 @@ def seed_admin():
         return
 
     # Default Admin Credentials
-    admin_email = "goddumahesh2@gmail.com"
-    admin_password = "Sahii@2605"
+    admin_email = "ramanarajmuddada20@gmail.com"
+    admin_password = "Ramana@123"
     admin_username = "tradeflow_admin"
 
     existing_admin = Users.query.filter_by(
