@@ -119,11 +119,15 @@ async function enrichUser(u) {
       const data = await res.json();
       if (data.bool && data.response?.subscriptions?.length > 0) {
         const s = data.response.subscriptions[0];
-        result.plan =
+        let plan =
           s.plan?.plan_name      ||
           s.plan_name            ||
           s.plan?.plan_tier      ||
           s.plan_tier            || "Free";
+        // Display the PREMIUM tier as "Elite" to match the plan labels used
+        // everywhere else in the product.
+        if (["Premium", "PREMIUM"].includes(plan)) plan = "Elite";
+        result.plan = plan;
       }
     })(),
     // Profile (country fallback)
@@ -392,8 +396,9 @@ export function AdminUsers() {
         ))}
       </div>
 
-      <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[200px] max-w-sm">
+      <div className="flex flex-col gap-3">
+        {/* Search */}
+        <div className="relative w-full max-w-sm">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
           <input
             type="text"
@@ -403,42 +408,38 @@ export function AdminUsers() {
             className="w-full bg-[#0C1220] border border-white/8 rounded-xl pl-9 pr-4 py-2.5 text-sm text-gray-300 placeholder-gray-700 focus:outline-none focus:border-violet-500/30 transition-colors"
           />
         </div>
-        <div className="flex gap-2 flex-wrap">
-          {["All", "Free", "Basic", "Pro", "Premium", "Enterprise"].map((p) => (
-            <button key={p} onClick={() => setPlan(p)}
-              className={`px-3 py-2 text-xs rounded-xl border transition-all ${
-                planFilter === p
-                  ? "border-violet-500/50 bg-violet-500/10 text-violet-300"
-                  : "border-white/8 text-gray-600 hover:text-white"
-              }`}>
-              {p}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          {["All", "Active", "Pending", "Suspended", "Banned"].map((s) => (
-            <button key={s} onClick={() => setStat(s)}
-              className={`px-3 py-2 text-xs rounded-xl border transition-all ${
-                statusFilter === s
-                  ? "border-violet-500/50 bg-violet-500/10 text-violet-300"
-                  : "border-white/8 text-gray-600 hover:text-white"
-              }`}>
-              {s}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-2 ml-auto">
-          {[["value","By Value"],["return","By Return"],["name","By Name"]].map(([v, l]) => (
-            <button key={v} onClick={() => setSortBy(v)}
-              className={`px-3 py-2 text-xs rounded-xl border transition-all ${
-                sortBy === v
-                  ? "border-violet-500/50 bg-violet-500/10 text-violet-300"
-                  : "border-white/8 text-gray-600 hover:text-white"
-              }`}>
-              {l}
-            </button>
-          ))}
-        </div>
+
+        {/* Filters — one mutually-exclusive row that wraps cleanly on any width.
+            Selecting any filter clears the others so only one is ever active. */}
+        {(() => {
+          const chip = (active) =>
+            `px-3 py-2 text-xs rounded-xl border transition-all whitespace-nowrap ${
+              active
+                ? "border-violet-500/50 bg-violet-500/10 text-violet-300"
+                : "border-white/8 text-gray-600 hover:text-white"
+            }`;
+          const selectPlan   = (p) => { setPlan(p); setStat("All"); };
+          const selectStatus = (s) => { setStat(s); setPlan("All"); };
+          return (
+            <div className="flex gap-2 flex-wrap items-center">
+              <button onClick={() => { setPlan("All"); setStat("All"); }}
+                className={chip(planFilter === "All" && statusFilter === "All")}>
+                All
+              </button>
+              {["Free", "Pro", "Elite"].map((p) => (
+                <button key={p} onClick={() => selectPlan(p)} className={chip(planFilter === p)}>
+                  {p}
+                </button>
+              ))}
+              <span className="w-px h-5 bg-white/10 mx-1" />
+              {["Active", "Pending", "Suspended", "Banned"].map((s) => (
+                <button key={s} onClick={() => selectStatus(s)} className={chip(statusFilter === s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          );
+        })()}
       </div>
 
       <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">

@@ -67,6 +67,31 @@ def _parse_dob(value):
             return None
 
 
+def _is_registered(user):
+    """A user counts as 'already registered' only once their email is verified
+    (or the account is otherwise active/suspended/banned). A brand-new PENDING,
+    unverified account is an abandoned signup — not a real registration."""
+    return user is not None and (user.is_email_verified or user.status != UserStatus.PENDING)
+
+
+def _purge_unverified_user(user):
+    """Delete an abandoned, unverified PENDING signup and all its dependent rows
+    so the same email/username can be reused to restart registration."""
+    from sqlalchemy import text
+    uid = user.user_id
+    tables = [r[0] for r in db.session.execute(text(
+        "SELECT DISTINCT table_name FROM information_schema.columns "
+        "WHERE table_schema=DATABASE() AND column_name='user_id' AND table_name<>'users'"
+    )).fetchall()]
+    db.session.execute(text("SET FOREIGN_KEY_CHECKS=0"))
+    for t in tables:
+        db.session.execute(text(f"DELETE FROM {t} WHERE user_id=:uid"), {"uid": uid})
+    db.session.execute(text("DELETE FROM users WHERE user_id=:uid"), {"uid": uid})
+    db.session.execute(text("SET FOREIGN_KEY_CHECKS=1"))
+    db.session.commit()
+    db.session.expire_all()
+
+
 def _build_tokens(user: Users):
     additional = {
         'role':     user.role.role_name,
@@ -174,12 +199,20 @@ class Register(Resource):
                                response={'message': 'You must accept the Terms & Conditions to register.'})
 
             # ── Duplicate checks ──────────────────────────────────────────────
-            if Users.query.filter_by(email=email).first():
+            # Only a VERIFIED account blocks re-registration. An unverified
+            # PENDING account (a user who registered but never confirmed the OTP)
+            # is treated as an abandoned signup and cleared, so the same email /
+            # username can be used to start over.
+            by_email = Users.query.filter_by(email=email).first()
+            by_uname = Users.query.filter_by(username=username).first()
+            if _is_registered(by_email):
                 return jsonify(bool=False, status=400,
                                response={'message': 'Email already registered.'})
-            if Users.query.filter_by(username=username).first():
+            if _is_registered(by_uname):
                 return jsonify(bool=False, status=400,
                                response={'message': 'Username already taken.'})
+            for stale in {u for u in (by_email, by_uname) if u is not None}:
+                _purge_unverified_user(stale)
 
             # ── Role lookup ───────────────────────────────────────────────────
             role = Roles.query.filter_by(role_name=role_name).first()
@@ -295,6 +328,18 @@ class Login(Resource):
                 _log_login(user.user_id, LoginStatus.BLOCKED, 'Account banned')
                 return jsonify(bool=False, status=403,
                                response={'message': 'Account banned.'})
+
+            # Registration is only complete once the email OTP is verified (which
+            # activates the account). Block PENDING / unverified accounts so a user
+            # who registered but abandoned the flow cannot sign in.
+            if user.status == UserStatus.PENDING or not user.is_email_verified:
+                _log_login(user.user_id, LoginStatus.BLOCKED, 'Email not verified')
+                return jsonify(bool=False, status=403, response={
+                    'message': 'Please verify your email and finish registration '
+                               '(select a plan and confirm the OTP) before signing in.',
+                    'requires_verification': True,
+                    'email': user.email,
+                })
 
             # 2FA check
             sec = user.security_settings

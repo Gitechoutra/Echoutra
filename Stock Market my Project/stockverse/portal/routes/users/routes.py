@@ -31,6 +31,7 @@ list_parser.add_argument('page',     type=int, default=1,     location='args')
 list_parser.add_argument('per_page', type=int, default=20,    location='args')
 list_parser.add_argument('status',   type=str, required=False, location='args')
 list_parser.add_argument('role',     type=str, required=False, location='args')
+list_parser.add_argument('plan',     type=str, required=False, location='args')
 list_parser.add_argument('search',   type=str, required=False, location='args')
 list_parser.add_argument('sort_by',  type=str, default='created_on', location='args')
 list_parser.add_argument('order',    type=str, default='desc', location='args')
@@ -90,6 +91,24 @@ class ListUsers(Resource):
                 role = Roles.query.filter_by(role_name=args['role'].upper()).first()
                 if role:
                     query = query.filter(Users.role_id == role.role_id)
+            if args.get('plan') and args['plan'].strip().upper() != 'ALL':
+                from portal.models.user_subscriptions import UserSubscriptions, SubscriptionStatus
+                from portal.models.subscription_plans  import SubscriptionPlans
+                # UI labels → plan tiers (Elite is the PREMIUM tier)
+                tier_map = {'FREE': 'FREE', 'BASIC': 'BASIC', 'PRO': 'PRO',
+                            'ELITE': 'PREMIUM', 'PREMIUM': 'PREMIUM', 'ENTERPRISE': 'ENTERPRISE'}
+                tier = tier_map.get(args['plan'].strip().upper(), args['plan'].strip().upper())
+                on_tier = [s.user_id for s in (UserSubscriptions.query
+                           .join(SubscriptionPlans, UserSubscriptions.plan_id == SubscriptionPlans.plan_id)
+                           .filter(UserSubscriptions.status == SubscriptionStatus.ACTIVE,
+                                   SubscriptionPlans.plan_tier == tier).all())]
+                if tier == 'FREE':
+                    # Free = users with an active FREE plan OR no active subscription at all
+                    any_active = [s.user_id for s in UserSubscriptions.query
+                                  .filter_by(status=SubscriptionStatus.ACTIVE).all()]
+                    query = query.filter((Users.user_id.in_(on_tier)) | (~Users.user_id.in_(any_active)))
+                else:
+                    query = query.filter(Users.user_id.in_(on_tier))
             if args.get('search'):
                 s = f"%{args['search']}%"
                 query = query.filter(

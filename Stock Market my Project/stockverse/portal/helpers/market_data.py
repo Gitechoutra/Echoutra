@@ -1,26 +1,31 @@
 """
 portal/helpers/market_data.py
 =============================
-Live market-data client backed by Twelve Data (https://twelvedata.com).
+Live market-data client backed by the **Upstox** API (https://upstox.com).
 
 Architecture
 ------------
-The user side never calls Twelve Data directly (the free tier is rate-limited to
-a handful of requests per minute). Instead the admin triggers a refresh which
+The user side never calls Upstox directly. The admin triggers a refresh which
 pulls live quotes into the `stocks` table, and every user page reads those
-cached prices from our own DB — so users see live-ish prices in real time
-without ever touching (or exhausting) the upstream API quota.
+cached prices from our own DB — so users see live prices in real time.
 
-Public API
+Upstox specifics
+----------------
+* Auth: `Authorization: Bearer <access_token>` (token expires daily ~3:30 AM IST).
+* Instruments are addressed by *instrument key* `NSE_EQ|<ISIN>` / `BSE_EQ|<ISIN>`,
+  built from each stock's `isin` + `exchange`.
+* `GET /market-quote/quotes?instrument_key=k1,k2,...` returns a batch of full
+  quotes keyed by `SEGMENT:SYMBOL`; each quote carries `instrument_token`
+  (== the key we sent) which we use to map results back to our stocks.
+
+Public API (unchanged from before, so routes need no edits)
 ----------
-* `is_configured()`                  → bool, True when an API key is available
-* `fetch_quote(symbol)`              → normalized quote dict for one symbol
-* `refresh_stock(stock)`             → fetch + write live data onto one Stocks row (no commit)
-* `refresh_stocks(stocks)`           → refresh many; returns a summary dict
+* `is_configured()`        -> bool
+* `refresh_stock(stock)`   -> {'ok', 'symbol', 'error', 'code'}   (mutates stock)
+* `refresh_stocks(stocks)` -> {'updated','failed','total','rate_limited','errors'}
 """
 
 import os
-import re
 import logging
 import traceback
 from datetime import datetime, timezone
@@ -29,184 +34,211 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 10  # seconds per HTTP call
+_TIMEOUT   = 15
+_BATCH_MAX = 450   # Upstox allows up to 500 instrument keys per call
 
 
 def _base_url():
-    return os.environ.get('TWELVE_DATA_BASE_URL', 'https://api.twelvedata.com').rstrip('/')
+    return os.environ.get('UPSTOX_BASE_URL', 'https://api.upstox.com/v2').rstrip('/')
 
 
-def get_api_key():
-    """
-    Resolve the Twelve Data API key. Prefers the dedicated TWELVE_DATA_API_KEY
-    env var, but falls back to parsing it out of APP_SECRET_KEY for backward
-    compatibility (the key was originally pasted there as a full URL).
-    """
-    key = (os.environ.get('TWELVE_DATA_API_KEY') or '').strip()
-    if key:
-        return key
-    legacy = os.environ.get('APP_SECRET_KEY', '') or ''
-    m = re.search(r'apikey=([A-Za-z0-9]+)', legacy)
-    return m.group(1) if m else None
+def get_access_token():
+    return (os.environ.get('UPSTOX_ACCESS_TOKEN') or '').strip() or None
 
 
 def is_configured():
-    return bool(get_api_key())
+    return bool(get_access_token())
 
 
-def td_symbol(stock):
-    """
-    Build the Twelve Data symbol for a Stocks row.
-
-    Twelve Data disambiguates listings with `TICKER:EXCHANGE` (e.g. `INFY:NSE`).
-    When no exchange is stored we fall back to the bare ticker.
-    """
-    ticker = (stock.ticker_symbol or '').strip().upper()
-    exch   = (stock.exchange or '').strip().upper()
-    return f"{ticker}:{exch}" if exch else ticker
+def instrument_key(stock):
+    """Build the Upstox instrument key `SEGMENT|ISIN` for a stock, or None."""
+    isin = (stock.isin or '').strip()
+    if not isin:
+        return None
+    seg = 'BSE_EQ' if (stock.exchange or '').strip().upper() == 'BSE' else 'NSE_EQ'
+    return f"{seg}|{isin}"
 
 
-def _to_float(v):
+def _f(v):
     try:
-        if v in (None, '', 'null'):
-            return None
-        return float(v)
+        return float(v) if v not in (None, '', 'null') else None
     except (TypeError, ValueError):
         return None
 
 
 def _to_int(v):
-    f = _to_float(v)
+    f = _f(v)
     return int(f) if f is not None else None
 
 
-def fetch_quote(symbol):
-    """
-    Fetch a single live quote from Twelve Data's /quote endpoint.
+def _headers():
+    return {'Authorization': f'Bearer {get_access_token()}', 'Accept': 'application/json'}
 
-    Returns a dict:
-        {'ok': True,  'data': {open, high, low, close, previous_close,
-                               change, percent_change, volume, currency,
-                               fifty_two_week_high, fifty_two_week_low,
-                               is_market_open, name, exchange}}
-        {'ok': False, 'error': '<message>', 'code': <int|None>}
-    """
-    key = get_api_key()
-    if not key:
-        return {'ok': False, 'error': 'Twelve Data API key not configured.', 'code': None}
 
+def _fetch_quotes(keys):
+    """
+    Fetch a batch of quotes. Returns:
+        {'ok': True,  'data': {instrument_token: quote, ...}}
+        {'ok': False, 'error': '<msg>', 'code': <http_status|None>}
+    """
+    if not get_access_token():
+        return {'ok': False, 'error': 'Upstox access token not configured.', 'code': None}
     try:
         resp = requests.get(
-            f"{_base_url()}/quote",
-            params={'symbol': symbol, 'apikey': key},
+            f"{_base_url()}/market-quote/quotes",
+            params={'instrument_key': ','.join(keys)},
+            headers=_headers(),
             timeout=_TIMEOUT,
         )
         payload = resp.json()
     except requests.RequestException as e:
-        logger.error(f"[market_data] network error for {symbol}: {e}")
+        logger.error(f"[market_data] Upstox network error: {e}")
         return {'ok': False, 'error': f'Network error: {e}', 'code': None}
     except ValueError:
-        return {'ok': False, 'error': 'Invalid response from market data provider.', 'code': None}
+        return {'ok': False, 'error': 'Invalid response from Upstox.', 'code': None}
 
-    # Twelve Data signals errors with {"status":"error","code":...,"message":...}
-    if isinstance(payload, dict) and payload.get('status') == 'error':
-        return {'ok': False, 'error': payload.get('message', 'Provider error.'),
-                'code': payload.get('code')}
+    if payload.get('status') != 'success':
+        # Common case: 401 → token expired/invalid.
+        errs = payload.get('errors') or []
+        msg  = (errs[0].get('message') if errs and isinstance(errs[0], dict)
+                else payload.get('message') or 'Upstox request failed.')
+        if resp.status_code == 401:
+            msg = 'Upstox access token expired or invalid — please regenerate it.'
+        return {'ok': False, 'error': msg, 'code': resp.status_code}
 
-    fw = payload.get('fifty_two_week') or {}
-    return {'ok': True, 'data': {
-        'open':                _to_float(payload.get('open')),
-        'high':                _to_float(payload.get('high')),
-        'low':                 _to_float(payload.get('low')),
-        'close':               _to_float(payload.get('close')),
-        'previous_close':      _to_float(payload.get('previous_close')),
-        'change':              _to_float(payload.get('change')),
-        'percent_change':      _to_float(payload.get('percent_change')),
-        'volume':              _to_int(payload.get('volume')),
-        'currency':            payload.get('currency'),
-        'fifty_two_week_high': _to_float(fw.get('high')),
-        'fifty_two_week_low':  _to_float(fw.get('low')),
-        'is_market_open':      payload.get('is_market_open'),
-        'name':                payload.get('name'),
-        'exchange':            payload.get('exchange'),
-    }}
+    # Index by instrument_token so we can map back to our stocks by their key.
+    by_token = {}
+    for q in (payload.get('data') or {}).values():
+        tok = q.get('instrument_token')
+        if tok:
+            by_token[tok] = q
+    return {'ok': True, 'data': by_token}
+
+
+def _apply_quote(stock, q):
+    """Write live Upstox quote fields onto a Stocks row (no commit)."""
+    lp   = _f(q.get('last_price'))
+    nc   = _f(q.get('net_change'))
+    ohlc = q.get('ohlc') or {}
+
+    if lp is not None:
+        stock.current_price = lp
+    if lp is not None and nc is not None:
+        prev = lp - nc
+        stock.previous_close       = prev
+        stock.price_change         = nc
+        stock.price_change_percent = (nc / prev * 100) if prev else 0
+    if _f(ohlc.get('open')) is not None:
+        stock.open_price = _f(ohlc.get('open'))
+    if _f(ohlc.get('high')) is not None:
+        stock.day_high = _f(ohlc.get('high'))
+    if _f(ohlc.get('low')) is not None:
+        stock.day_low = _f(ohlc.get('low'))
+    if _to_int(q.get('volume')) is not None:
+        stock.volume = _to_int(q.get('volume'))
+    stock.last_price_update = datetime.now(timezone.utc)
+
+
+def fetch_52week(stock):
+    """
+    Compute the 52-week high/low from Upstox daily historical candles.
+    Returns (high, low) or None. (52-week range isn't part of the live quote.)
+    """
+    key = instrument_key(stock)
+    if not key:
+        return None
+    from datetime import date, timedelta
+    to_d  = date.today().isoformat()
+    from_d = (date.today() - timedelta(days=365)).isoformat()
+    try:
+        resp = requests.get(
+            f"{_base_url()}/historical-candle/{key}/day/{to_d}/{from_d}",
+            headers=_headers(), timeout=_TIMEOUT,
+        )
+        payload = resp.json()
+    except (requests.RequestException, ValueError):
+        return None
+    if payload.get('status') != 'success':
+        return None
+    candles = (payload.get('data') or {}).get('candles') or []
+    if not candles:
+        return None
+    highs = [_f(c[2]) for c in candles if _f(c[2]) is not None]
+    lows  = [_f(c[3]) for c in candles if _f(c[3]) is not None]
+    if not highs or not lows:
+        return None
+    return (max(highs), min(lows))
 
 
 def refresh_stock(stock):
-    """
-    Fetch a live quote for `stock` and write the price fields onto the model
-    instance (caller is responsible for committing the session).
-
-    Returns {'ok': bool, 'symbol': str, 'error': str|None, 'code': int|None}.
-    """
-    symbol = td_symbol(stock)
-    result = fetch_quote(symbol)
-    if not result['ok']:
-        return {'ok': False, 'symbol': symbol, 'error': result['error'], 'code': result.get('code')}
-
-    d = result['data']
-    close = d['close']
-    prev  = d['previous_close']
-
-    if close is not None:
-        stock.current_price = close
-    if prev is not None:
-        stock.previous_close = prev
-    if d['open'] is not None:
-        stock.open_price = d['open']
-    if d['high'] is not None:
-        stock.day_high = d['high']
-    if d['low'] is not None:
-        stock.day_low = d['low']
-    if d['volume'] is not None:
-        stock.volume = d['volume']
-    if d['fifty_two_week_high'] is not None:
-        stock.week_52_high = d['fifty_two_week_high']
-    if d['fifty_two_week_low'] is not None:
-        stock.week_52_low = d['fifty_two_week_low']
-
-    # Prefer the provider's change values; otherwise derive from close/prev.
-    if d['change'] is not None:
-        stock.price_change = d['change']
-    elif close is not None and prev is not None:
-        stock.price_change = close - prev
-    if d['percent_change'] is not None:
-        stock.price_change_percent = d['percent_change']
-    elif close is not None and prev not in (None, 0):
-        stock.price_change_percent = ((close - prev) / prev) * 100
-
-    stock.last_price_update = datetime.now(timezone.utc)
-    return {'ok': True, 'symbol': symbol, 'error': None, 'code': None}
+    """Fetch a live quote for one stock and write it (caller commits)."""
+    key = instrument_key(stock)
+    if not key:
+        return {'ok': False, 'symbol': stock.ticker_symbol,
+                'error': 'Stock has no ISIN — cannot build an Upstox instrument key.', 'code': None}
+    res = _fetch_quotes([key])
+    if not res['ok']:
+        return {'ok': False, 'symbol': stock.ticker_symbol, 'error': res['error'], 'code': res.get('code')}
+    quote = res['data'].get(key)
+    if not quote:
+        return {'ok': False, 'symbol': stock.ticker_symbol, 'error': 'No live quote returned for this instrument.', 'code': None}
+    _apply_quote(stock, quote)
+    return {'ok': True, 'symbol': stock.ticker_symbol, 'error': None, 'code': None}
 
 
 def refresh_stocks(stocks):
     """
-    Refresh a collection of Stocks rows (does NOT commit — caller commits once).
-
-    Returns a summary:
-        {'updated': int, 'failed': int, 'total': int,
-         'errors': [{'symbol':..., 'error':..., 'code':...}, ...]}
-    Stops early and flags rate-limiting if the provider returns code 429.
+    Refresh many stocks in batched Upstox calls (does NOT commit).
+    Returns a summary dict.
     """
-    updated, errors, rate_limited = 0, [], False
-    for stock in stocks:
-        try:
-            r = refresh_stock(stock)
-            if r['ok']:
-                updated += 1
+    key_to_stock = {}
+    errors = []
+    for s in stocks:
+        k = instrument_key(s)
+        if k:
+            key_to_stock[k] = s
+        else:
+            errors.append({'symbol': s.ticker_symbol, 'error': 'No ISIN on record.', 'code': None})
+
+    keys = list(key_to_stock.keys())
+    if not keys:
+        return {'updated': 0, 'failed': len(errors), 'total': len(stocks),
+                'rate_limited': False, 'errors': errors}
+
+    updated = 0
+    token_expired = False
+    for i in range(0, len(keys), _BATCH_MAX):
+        chunk = keys[i:i + _BATCH_MAX]
+        res = _fetch_quotes(chunk)
+        if not res['ok']:
+            token_expired = token_expired or (res.get('code') == 401)
+            for k in chunk:
+                errors.append({'symbol': key_to_stock[k].ticker_symbol, 'error': res['error'], 'code': res.get('code')})
+            continue
+        for k in chunk:
+            q = res['data'].get(k)
+            if q:
+                try:
+                    stock = key_to_stock[k]
+                    _apply_quote(stock, q)
+                    # Fill the 52-week range once (it isn't in the live quote and
+                    # changes slowly). Only when missing, so routine price refreshes
+                    # stay fast — new stocks self-heal on their first refresh.
+                    if stock.week_52_high is None or stock.week_52_low is None:
+                        hl = fetch_52week(stock)
+                        if hl:
+                            stock.week_52_high, stock.week_52_low = hl
+                    updated += 1
+                except Exception as e:
+                    traceback.print_exc()
+                    errors.append({'symbol': key_to_stock[k].ticker_symbol, 'error': str(e), 'code': None})
             else:
-                errors.append({'symbol': r['symbol'], 'error': r['error'], 'code': r.get('code')})
-                if r.get('code') == 429:
-                    rate_limited = True
-                    break  # respect the quota — admin can retry shortly
-        except Exception as e:
-            traceback.print_exc()
-            errors.append({'symbol': td_symbol(stock), 'error': str(e), 'code': None})
+                errors.append({'symbol': key_to_stock[k].ticker_symbol, 'error': 'No quote returned.', 'code': None})
 
     return {
-        'updated':      updated,
-        'failed':       len(errors),
-        'total':        len(stocks),
-        'rate_limited': rate_limited,
-        'errors':       errors,
+        'updated':       updated,
+        'failed':        len(errors),
+        'total':         len(stocks),
+        'rate_limited':  token_expired,   # surfaced so the route can hint a retry/regenerate
+        'errors':        errors,
     }

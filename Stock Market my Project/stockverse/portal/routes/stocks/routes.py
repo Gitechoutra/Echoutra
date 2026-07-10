@@ -343,7 +343,7 @@ class UpdateStockPrice(Resource):
 
 @ns.route('/live_status')
 class LiveDataStatus(Resource):
-    @ns.doc(description='Report whether live market-data (Twelve Data) is configured.')
+    @ns.doc(description='Report whether live market-data (Upstox) is configured.')
     @jwt_required()
     def get(self):
         from portal.helpers.market_data import is_configured
@@ -354,7 +354,7 @@ class LiveDataStatus(Resource):
 
 @ns.route('/<int:stock_id>/refresh_price')
 class RefreshStockPrice(Resource):
-    @ns.doc(description='[ADMIN] Pull the latest live quote for one stock from Twelve Data and store it.')
+    @ns.doc(description='[ADMIN] Pull the latest live quote for one stock from Upstox and store it.')
     @jwt_required()
     def post(self, stock_id):
         try:
@@ -364,7 +364,7 @@ class RefreshStockPrice(Resource):
             from portal.helpers.market_data import is_configured, refresh_stock
             if not is_configured():
                 return jsonify(bool=False, status=400,
-                               response={'message': 'Live market data is not configured (missing TWELVE_DATA_API_KEY).'})
+                               response={'message': 'Live market data is not configured (missing UPSTOX_ACCESS_TOKEN).'})
 
             stock = Stocks.query.get(stock_id)
             if not stock:
@@ -392,7 +392,7 @@ class RefreshStockPrice(Resource):
 
 @ns.route('/refresh_live')
 class RefreshAllLive(Resource):
-    @ns.doc(description='[ADMIN] Pull the latest live quotes for all active stocks from Twelve Data.')
+    @ns.doc(description='[ADMIN] Pull the latest live quotes for all active stocks from Upstox.')
     @jwt_required()
     def post(self):
         try:
@@ -402,16 +402,16 @@ class RefreshAllLive(Resource):
             from portal.helpers.market_data import is_configured, refresh_stocks
             if not is_configured():
                 return jsonify(bool=False, status=400,
-                               response={'message': 'Live market data is not configured (missing TWELVE_DATA_API_KEY).'})
+                               response={'message': 'Live market data is not configured (missing UPSTOX_ACCESS_TOKEN).'})
 
             from portal import db
             stocks  = Stocks.query.filter_by(status=StockStatus.ACTIVE).all()
             summary = refresh_stocks(stocks)
             db.session.commit()   # persist all successful updates in one commit
 
-            msg = f"Refreshed {summary['updated']} of {summary['total']} stock(s) from live data."
+            msg = f"Refreshed {summary['updated']} of {summary['total']} stock(s) from live Upstox data."
             if summary.get('rate_limited'):
-                msg += " Provider rate limit reached — please retry in a minute for the rest."
+                msg += " The Upstox access token appears to have expired — please regenerate it."
             return jsonify(bool=True, status=200, response={'message': msg, **summary})
 
         except Exception as e:

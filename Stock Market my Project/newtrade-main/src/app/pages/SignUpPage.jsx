@@ -75,7 +75,7 @@ export function SignUpPage() {
   const [showPw,     setShowPw]     = useState(false);
   const [loading,    setLoading]    = useState(false);
   const [error,      setError]      = useState("");
-  const [plan,       setPlan]       = useState("pro");
+  const [plan,       setPlan]       = useState(null);   // no plan pre-selected — user must choose
   const [experience, setExperience] = useState("intermediate");
   const [tags,       setTags]       = useState(["US Stocks", "ETFs"]);
   const [form,       setForm]       = useState({
@@ -382,7 +382,10 @@ export function SignUpPage() {
   const submit = async () => {
     setError("");
     if (step === 0) { await doRegister(); return; }
-    if (step === 1) { setStep(2); return; }
+    if (step === 1) {
+      if (!plan) { setError("Please select a plan before continuing."); return; }
+      setStep(2); return;
+    }
     if (step === 3) { await doVerifyOtp(); return; }
   };
 
@@ -1034,6 +1037,11 @@ export function SignUpPage() {
                   ))}
                 </div>
               </div>
+              {error && (
+                <div className="flex items-center gap-2 px-3 py-2.5 mt-5 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-400">
+                  <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" /> {error}
+                </div>
+              )}
             </motion.div>
           )}
 
