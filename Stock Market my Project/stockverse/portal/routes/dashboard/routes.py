@@ -836,7 +836,7 @@ class UserMarketOverview(Resource):
             p.add_argument('per_page',   type=int, default=20,   location='args')
             p.add_argument('search',     type=str, required=False, location='args')
             p.add_argument('sector',     type=str, required=False, location='args')
-            p.add_argument('sort_by',    type=str, default='market_cap', location='args')
+            p.add_argument('sort_by',    type=str, default='current_price', location='args')
             p.add_argument('order',      type=str, default='desc', location='args')
             args     = p.parse_args(strict=False)
             page     = max(1, args['page'])
@@ -854,7 +854,7 @@ class UserMarketOverview(Resource):
             if args.get('sector'):
                 query = query.filter(Stocks.sector.ilike(f"%{args['sector']}%"))
 
-            sort_col = getattr(Stocks, args.get('sort_by', 'market_cap'), Stocks.market_cap)
+            sort_col = getattr(Stocks, args.get('sort_by', 'current_price'), Stocks.current_price)
             query    = query.order_by(sort_col.desc() if args['order'] == 'desc' else sort_col.asc())
 
             paginated = query.paginate(page=page, per_page=per_page, error_out=False)
@@ -877,9 +877,7 @@ class UserMarketOverview(Resource):
                     'exchange':             s.exchange,
                     'current_price':        float(s.current_price)         if s.current_price         else None,
                     'price_change_percent': float(s.price_change_percent)  if s.price_change_percent  else None,
-                    'market_cap':           float(s.market_cap)            if s.market_cap            else None,
                     'volume':               s.volume,
-                    'pe_ratio':             float(s.pe_ratio)              if s.pe_ratio              else None,
                     'my_holding': {
                         'quantity':               float(h.quantity),
                         'avg_buy_price':          float(h.average_buy_price),

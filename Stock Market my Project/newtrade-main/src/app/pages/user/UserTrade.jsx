@@ -83,7 +83,7 @@ export function UserTrade() {
   ════════════════════════════════════════════════════════ */
   const fetchStocks = useCallback(async () => {
     try {
-      const res  = await fetch(`${API_BASE}/stocks/list?per_page=50&sort_by=market_cap&order=desc`, { headers: authHdr() });
+      const res  = await fetch(`${API_BASE}/stocks/list?per_page=50&sort_by=current_price&order=desc`, { headers: authHdr() });
       const data = await res.json();
       if (data.bool) {
         const list = data.response?.stocks || [];

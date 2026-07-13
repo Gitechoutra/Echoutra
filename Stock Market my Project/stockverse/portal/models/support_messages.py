@@ -26,6 +26,7 @@ class SupportMessages(db.Model):
     sender_role = db.Column(db.String(10), nullable=False)   # USER | ADMIN
     sender_id   = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=True)
 
+    # May be an empty string for image-only messages (WhatsApp-style caption is optional).
     message     = db.Column(db.Text, nullable=False)
 
     is_read_by_user  = db.Column(db.Boolean, default=False, index=True)
@@ -33,16 +34,27 @@ class SupportMessages(db.Model):
 
     created_on  = db.Column(db.DateTime, default=datetime.now, index=True)
 
+    # One optional image attachment per message. Deleting the message removes it.
+    attachment  = db.relationship(
+        'SupportAttachments',
+        uselist=False,
+        cascade='all, delete-orphan',
+        backref=db.backref('message', uselist=False),
+    )
+
     def __repr__(self):
         return f"<SupportMessage id={self.message_id} user={self.user_id} role={self.sender_role}>"
 
     def to_dict(self):
+        att = self.attachment
         return {
             'message_id':  self.message_id,
             'user_id':     self.user_id,
             'sender_role': self.sender_role,
             'sender_id':   self.sender_id,
             'message':     self.message,
+            'message_type': 'IMAGE' if att else 'TEXT',
+            'attachment':  att.to_dict() if att else None,
             'is_read_by_user':  self.is_read_by_user,
             'is_read_by_admin': self.is_read_by_admin,
             'created_on':  str(self.created_on),

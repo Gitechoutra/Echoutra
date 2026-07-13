@@ -53,14 +53,12 @@ class Stocks(db.Model):
     volume                = db.Column(db.BigInteger, nullable=True)
     avg_volume            = db.Column(db.BigInteger, nullable=True)
 
-    # Fundamentals
-    market_cap     = db.Column(db.Numeric(20, 2), nullable=True)
-    pe_ratio       = db.Column(db.Numeric(10, 4), nullable=True)
-    eps            = db.Column(db.Numeric(10, 4), nullable=True)
-    dividend_yield = db.Column(db.Numeric(8, 4),  nullable=True)
-    beta           = db.Column(db.Numeric(8, 4),  nullable=True)
+    # 52-week range (from Upstox daily historical candles)
     week_52_high   = db.Column(db.Numeric(15, 4), nullable=True)
     week_52_low    = db.Column(db.Numeric(15, 4), nullable=True)
+    # NOTE: fundamentals (market_cap, pe_ratio, eps, dividend_yield, beta) were
+    # removed — the Upstox market-quote API does not supply them, so we never
+    # show placeholder/dummy values for data we can't source live.
 
     # Logo / Branding
     logo_url    = db.Column(db.String(500), nullable=True)

@@ -9,6 +9,7 @@ import { AdminDashboard } from "./pages/admin/AdminDashboard";
 import { AdminUsers } from "./pages/admin/AdminUsers";
 import { AdminUserDetail } from "./pages/admin/AdminUserDetail";
 import { AdminAllStocks } from "./pages/admin/AdminAllStocks";
+import { AdminStockDetail } from "./pages/admin/AdminStockDetail";
 import { AdminAnalytics } from "./pages/admin/AdminAnalytics";
 import { AdminNews } from "./pages/admin/AdminNews";
 import { AdminSettings } from "./pages/admin/AdminSettings";
@@ -47,6 +48,7 @@ export const router = createBrowserRouter([
       { path: "users", Component: AdminUsers },
       { path: "users/:userId", Component: AdminUserDetail },
       { path: "stocks", Component: AdminAllStocks },
+      { path: "stock/:symbol", Component: AdminStockDetail },
       { path: "analytics", Component: AdminAnalytics },
       { path: "news", Component: AdminNews },
       { path: "settings", Component: AdminSettings },

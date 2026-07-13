@@ -15,7 +15,7 @@ export function UserMarket() {
   const [search,    setSearch]    = useState("");
   const [sector,    setSector]    = useState("All");
   const [tab,       setTab]       = useState("all");
-  const [sortBy,    setSortBy]    = useState("market_cap");
+  const [sortBy,    setSortBy]    = useState("current_price");
   const [sortDir,   setSortDir]   = useState("desc");
   const [stocks,    setStocks]    = useState([]);
   const [sectors,   setSectors]   = useState(["All"]);
@@ -214,9 +214,6 @@ export function UserMarket() {
                     <div className="flex items-center gap-1">Change <SortIcon col="price_change_percent" /></div>
                   </th>
                   <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium hidden sm:table-cell">Volume</th>
-                  <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium hidden md:table-cell cursor-pointer hover:text-gray-400" onClick={() => handleSort("market_cap")}>
-                    <div className="flex items-center gap-1">Mkt Cap <SortIcon col="market_cap" /></div>
-                  </th>
                   <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium hidden lg:table-cell">Sector</th>
                   <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium">My Holdings</th>
                   <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium">Watch</th>
@@ -227,7 +224,6 @@ export function UserMarket() {
                   const changePct = parseFloat(s.price_change_percent || 0);
                   const up = changePct >= 0;
                   const myH = myHoldingMap[s.ticker_symbol];
-                  const mktCap = s.market_cap ? (s.market_cap >= 1e12 ? `₹${(s.market_cap / 1e12).toFixed(1)}T` : `₹${(s.market_cap / 1e9).toFixed(1)}B`) : "—";
                   const vol = s.volume ? (s.volume >= 1e6 ? `${(s.volume / 1e6).toFixed(1)}M` : `${s.volume}`) : "—";
                   return (
                     <motion.tr key={s.stock_id || s.ticker_symbol} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
@@ -256,7 +252,6 @@ export function UserMarket() {
                         </div>
                       </td>
                       <td className="px-5 py-3.5 text-sm text-gray-500 hidden sm:table-cell">{vol}</td>
-                      <td className="px-5 py-3.5 text-sm text-gray-500 hidden md:table-cell">{mktCap}</td>
                       <td className="px-5 py-3.5 hidden lg:table-cell">
                         <span className="px-2 py-0.5 bg-white/5 rounded text-xs text-gray-500">{s.sector || "—"}</span>
                       </td>

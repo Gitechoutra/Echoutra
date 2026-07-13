@@ -24,7 +24,7 @@ list_parser.add_argument('search',     type=str, required=False, location='args'
 list_parser.add_argument('sector',     type=str, required=False, location='args')
 list_parser.add_argument('exchange',   type=str, required=False, location='args')
 list_parser.add_argument('asset_type', type=str, required=False, location='args')
-list_parser.add_argument('sort_by',    type=str, default='market_cap', location='args')
+list_parser.add_argument('sort_by',    type=str, default='current_price', location='args')
 list_parser.add_argument('order',      type=str, default='desc', location='args')
 
 history_parser = reqparse.RequestParser()
@@ -44,7 +44,6 @@ create_parser.add_argument('exchange',       type=str, required=False, location=
 create_parser.add_argument('country',        type=str, required=False, location='json')
 create_parser.add_argument('currency',       type=str, required=False, location='json', default='INR')
 create_parser.add_argument('current_price',  type=float, required=False, location='json')
-create_parser.add_argument('market_cap',     type=float, required=False, location='json')
 create_parser.add_argument('logo_url',       type=str, required=False, location='json')
 create_parser.add_argument('website_url',    type=str, required=False, location='json')
 create_parser.add_argument('description',    type=str, required=False, location='json')
@@ -76,9 +75,6 @@ def _stock_dict(s: Stocks, include_position=False, user_id=None) -> dict:
         'day_high':           float(s.day_high) if s.day_high else None,
         'day_low':            float(s.day_low) if s.day_low else None,
         'volume':             s.volume,
-        'market_cap':         float(s.market_cap) if s.market_cap else None,
-        'pe_ratio':           float(s.pe_ratio) if s.pe_ratio else None,
-        'dividend_yield':     float(s.dividend_yield) if s.dividend_yield else None,
         'week_52_high':       float(s.week_52_high) if s.week_52_high else None,
         'week_52_low':        float(s.week_52_low) if s.week_52_low else None,
         'logo_url':           s.logo_url,
@@ -127,7 +123,7 @@ class ListStocks(Resource):
             if args.get('asset_type'):
                 query = query.filter(Stocks.asset_type == args['asset_type'].upper())
 
-            sort_col = getattr(Stocks, args.get('sort_by', 'market_cap'), Stocks.market_cap)
+            sort_col = getattr(Stocks, args.get('sort_by', 'current_price'), Stocks.current_price)
             query    = query.order_by(sort_col.desc() if args['order'] == 'desc' else sort_col.asc())
 
             paginated = query.paginate(page=page, per_page=per_page, error_out=False)
@@ -445,7 +441,6 @@ class CreateStock(Resource):
 
             stock.ticker_symbol  = ticker
             stock.current_price  = args.get('current_price')
-            stock.market_cap     = args.get('market_cap')
             stock.currency       = 'INR'   # Platform trades exclusively in Indian Rupees
             stock.save()
 

@@ -4,12 +4,16 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   Search, TrendingUp, TrendingDown, Users, UserCheck,
   UserX, Crown, Eye, AlertCircle, RefreshCw, IndianRupee,
-  MessageSquare, Send, X, Headphones,
+  MessageSquare, Send, X, Headphones, ImagePlus, Loader2,
 } from "lucide-react";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
 const authHdr  = () => ({ Authorization: `Bearer ${getToken()}`, "Content-Type": "application/json" });
+// Multipart uploads must NOT set Content-Type — the browser adds the boundary.
+const authOnly = () => ({ Authorization: `Bearer ${getToken()}` });
+// Absolute, token-bearing URL an <img> can load directly.
+const attachmentUrl = (att) => `${API_BASE}${att.url}?token=${getToken()}`;
 
 const statusColors = {
   ACTIVE:    "bg-emerald-500/10 text-emerald-400 border-emerald-500/15",
@@ -165,8 +169,10 @@ export function AdminUsers() {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatDraft,    setChatDraft]    = useState("");
   const [chatSending,  setChatSending]  = useState(false);
+  const [chatUploading,setChatUploading] = useState(false);
   const [chatUnread,   setChatUnread]   = useState({});     // { [user_id]: count }
   const chatBottomRef  = useRef(null);
+  const chatFileRef    = useRef(null);
 
   const fetchUsers = useCallback(async (pageNum = 1, searchTerm = "", plan = "All", status = "All") => {
     setLoading(true);
@@ -320,6 +326,30 @@ export function AdminUsers() {
       if (data.bool) fetchChatThread(chatUser.id);
     } catch { /* keep optimistic */ }
     finally { setChatSending(false); }
+  };
+
+  const sendChatImage = async (file) => {
+    if (!file || chatUploading || !chatUser) return;
+    if (!file.type.startsWith("image/")) { alert("Please choose an image file."); return; }
+    if (file.size > 5 * 1024 * 1024)     { alert("Image is too large (max 5 MB)."); return; }
+    setChatUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const res  = await fetch(`${API_BASE}/support/admin/upload/${chatUser.id}`, {
+        method: "POST", headers: authOnly(), body: form,
+      });
+      const data = await res.json();
+      if (data.bool) fetchChatThread(chatUser.id);
+      else alert(data.response?.message || "Upload failed.");
+    } catch { alert("Upload failed. Please try again."); }
+    finally { setChatUploading(false); }
+  };
+
+  const onPickChatImage = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (file) sendChatImage(file);
   };
 
   const fmtChatTime = (s) => {
@@ -631,7 +661,17 @@ export function AdminUsers() {
                         <div className={`text-[10px] font-semibold mb-0.5 ${admin ? "text-white/70" : "text-cyan-400"}`}>
                           {admin ? "You (Support)" : chatUser.name}
                         </div>
-                        <div className="whitespace-pre-wrap break-words">{m.message}</div>
+                        {m.attachment && (
+                          <a href={attachmentUrl(m.attachment)} target="_blank" rel="noreferrer" className="block mb-1">
+                            <img
+                              src={attachmentUrl(m.attachment)}
+                              alt={m.attachment.file_name || "image"}
+                              className="rounded-lg max-h-60 w-auto object-cover border border-white/10"
+                              loading="lazy"
+                            />
+                          </a>
+                        )}
+                        {m.message && <div className="whitespace-pre-wrap break-words">{m.message}</div>}
                         <div className={`text-[10px] mt-1 ${admin ? "text-white/60" : "text-gray-500"}`}>{fmtChatTime(m.created_on)}</div>
                       </div>
                     </div>
@@ -642,6 +682,14 @@ export function AdminUsers() {
 
               {/* Composer */}
               <div className="p-3 border-t border-white/5 flex items-center gap-2">
+                <input ref={chatFileRef} type="file" accept="image/*" onChange={onPickChatImage} className="hidden" />
+                <button
+                  onClick={() => chatFileRef.current?.click()}
+                  disabled={chatUploading}
+                  title="Send an image"
+                  className="w-10 h-10 rounded-xl bg-[#141C30] border border-white/8 flex items-center justify-center text-cyan-400 hover:text-cyan-300 hover:border-cyan-500/30 disabled:opacity-50 flex-shrink-0">
+                  {chatUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImagePlus className="w-4 h-4" />}
+                </button>
                 <input
                   value={chatDraft}
                   onChange={(e) => setChatDraft(e.target.value)}

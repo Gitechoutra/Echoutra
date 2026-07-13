@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  TrendingUp, TrendingDown, Users, Search, AlertCircle,
+  TrendingUp, TrendingDown, Search, AlertCircle,
   RefreshCw, Plus, X, Check, Upload, Edit2, DollarSign,
   IndianRupee, Globe, BarChart2,
 } from "lucide-react";
+import { StockChart } from "../../components/StockChart";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -25,14 +26,6 @@ const fmtPrice = (price, currency = "INR") => {
   return `${currSym(currency)}${Number(price).toLocaleString("en-IN", {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
   })}`;
-};
-const fmtMarketCap = (cap, currency = "INR") => {
-  if (!cap) return "—";
-  const n = Number(cap);
-  if (n >= 1e12) return `${currSym(currency)}${(n / 1e12).toFixed(2)}T`;
-  if (n >= 1e9)  return `${currSym(currency)}${(n / 1e9).toFixed(2)}B`;
-  if (n >= 1e6)  return `${currSym(currency)}${(n / 1e6).toFixed(2)}M`;
-  return `${currSym(currency)}${n.toLocaleString("en-IN")}`;
 };
 
 /* ── Static options (match Stocks model choices) ── */
@@ -58,8 +51,7 @@ const EMPTY_FORM = {
   sector: "", industry: "", exchange: "NSE", country: "India",
   currency: "INR",               /* Default INR — changes with exchange */
   isin: "",                      /* from Stocks model: isin VARCHAR(20) */
-  current_price: "", previous_close: "", market_cap: "",
-  pe_ratio: "", eps: "", dividend_yield: "", beta: "",
+  current_price: "", previous_close: "",
   week_52_high: "", week_52_low: "",
   logo_url: "", website_url: "", description: "",
   is_tradable: true, is_featured: false,
@@ -132,6 +124,9 @@ export function AdminAllStocks() {
   const [liveRefreshing, setLiveRefreshing] = useState(false);
   const [liveMsg,        setLiveMsg]        = useState("");
 
+  /* ── Interactive chart modal ── */
+  const [chartTarget, setChartTarget] = useState(null);   // selected stock row
+
   /* ── Fetch ── */
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -140,7 +135,7 @@ export function AdminAllStocks() {
       /* Primary: admin overview gives holder counts + AUM per stock */
       const [overviewRes, stocksRes] = await Promise.allSettled([
         fetch(`${API_BASE}/admin/stocks/overview?per_page=100`, { headers: authHdr() }),
-        fetch(`${API_BASE}/stocks/list?per_page=100&sort_by=market_cap&order=desc`, { headers: authHdr() }),
+        fetch(`${API_BASE}/stocks/list?per_page=100&sort_by=current_price&order=desc`, { headers: authHdr() }),
       ]);
 
       let overviewStocks = [];
@@ -213,20 +208,14 @@ export function AdminAllStocks() {
       changePct:     parseFloat(ov.price_change_pct || listS.price_change_percent || 0),
       volume:        listS.volume     || 0,
       avgVolume:     listS.avg_volume || 0,
-      /* Fundamentals */
-      marketCap:     parseFloat(listS.market_cap    || 0),
-      peRatio:       parseFloat(listS.pe_ratio      || 0),
-      eps:           parseFloat(listS.eps           || 0),
-      divYield:      parseFloat(listS.dividend_yield|| 0),
-      beta:          parseFloat(listS.beta          || 0),
+      /* 52-week range (from Upstox historical candles) */
       week52High:    parseFloat(listS.week_52_high  || 0),
       week52Low:     parseFloat(listS.week_52_low   || 0),
-      /* Platform stats */
+      /* Platform stats — only used for the summary cards, not per-row columns */
       users:         ov.total_holders || ov.users    || 0,
       watchers:      ov.total_watchers|| 0,
       totalShares:   ov.total_trades  || 0,
       totalValue:    parseFloat(ov.platform_aum || 0),
-      aumPct:        parseFloat(ov.platform_aum_percent || 0),
       popularityRank:ov.popularity_rank || null,
       consensusRating:ov.consensus_rating || listS.analytics?.consensus_rating || null,
       /* Flags */
@@ -257,12 +246,6 @@ export function AdminAllStocks() {
     if (!form.company_name.trim())   errs.company_name   = "Required.";
     if (!form.current_price || isNaN(parseFloat(form.current_price)))
       errs.current_price = "Valid price required.";
-    if (form.market_cap    && isNaN(parseFloat(form.market_cap)))
-      errs.market_cap    = "Must be a number.";
-    if (form.pe_ratio      && isNaN(parseFloat(form.pe_ratio)))
-      errs.pe_ratio      = "Must be a number.";
-    if (form.eps           && isNaN(parseFloat(form.eps)))
-      errs.eps           = "Must be a number.";
     if (form.week_52_high  && isNaN(parseFloat(form.week_52_high)))
       errs.week_52_high  = "Must be a number.";
     if (form.week_52_low   && isNaN(parseFloat(form.week_52_low)))
@@ -292,12 +275,7 @@ export function AdminAllStocks() {
         ...(form.exchange      && { exchange:      form.exchange            }),
         ...(form.country       && { country:       form.country.trim()      }),
         ...(form.isin          && { isin:          form.isin.trim()         }),
-        ...(form.market_cap    && { market_cap:    parseFloat(form.market_cap)   }),
         ...(form.previous_close&& { previous_close:parseFloat(form.previous_close)}),
-        ...(form.pe_ratio      && { pe_ratio:      parseFloat(form.pe_ratio)     }),
-        ...(form.eps           && { eps:           parseFloat(form.eps)           }),
-        ...(form.dividend_yield&& { dividend_yield:parseFloat(form.dividend_yield)}),
-        ...(form.beta          && { beta:          parseFloat(form.beta)          }),
         ...(form.week_52_high  && { week_52_high:  parseFloat(form.week_52_high)  }),
         ...(form.week_52_low   && { week_52_low:   parseFloat(form.week_52_low)   }),
         ...(form.logo_url      && { logo_url:      form.logo_url.trim()     }),
@@ -417,7 +395,6 @@ export function AdminAllStocks() {
     { label: "Most Held",        value: summary.mostHeld,       sub: `${summary.mostHeldUsers} users` },
     { label: "Platform Stocks",  value: summary.totalStocks,    sub: "unique symbols" },
     { label: "Total Positions",  value: summary.totalPositions, sub: "across all users" },
-    { label: "Largest AUM",      value: `₹${Math.max(0,summary.largestValue).toLocaleString("en-IN",{maximumFractionDigits:0})}`, sub: "single stock" },
   ];
 
   /* ════════════════════════════════════════════════════════════════════════
@@ -440,11 +417,6 @@ export function AdminAllStocks() {
             className="p-2 rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-colors">
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
-          <div className="text-xs text-gray-500 bg-[#0C1220] border border-white/5 px-3 py-2 rounded-xl">
-            Platform AUM: <span className="text-white font-medium">
-              ₹{(totalPlatformValue/1e5).toFixed(2)}L
-            </span>
-          </div>
           <button onClick={handleRefreshLive} disabled={liveRefreshing}
             title="Pull the latest live prices from the market data provider"
             className="flex items-center gap-2 px-4 py-2 bg-emerald-600/15 border border-emerald-500/30 rounded-xl text-sm font-medium text-emerald-400 hover:bg-emerald-600/25 transition-colors disabled:opacity-60">
@@ -470,7 +442,7 @@ export function AdminAllStocks() {
       )}
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {summaryCards.map((s, i) => (
           <div key={i} className="bg-[#0C1220] border border-white/5 rounded-2xl p-4">
             <div className="text-xs text-gray-500 mb-1">{s.label}</div>
@@ -518,8 +490,7 @@ export function AdminAllStocks() {
                 <tr className="border-b border-white/5">
                   {[
                     "#","Symbol / ISIN","Exchange","Currency",
-                    "Price","52W Range","Change","P/E","Div Yield",
-                    "Market Cap","Users","Platform AUM","% AUM","Update",
+                    "Price","52W Range","Change","Actions",
                   ].map(h => (
                     <th key={h} className="px-4 py-3.5 text-left text-xs text-gray-600 font-medium whitespace-nowrap">{h}</th>
                   ))}
@@ -528,12 +499,13 @@ export function AdminAllStocks() {
               <tbody>
                 {filtered.map((s, i) => {
                   const up  = s.changePct >= 0;
-                  const pct = totalPlatformValue > 0 ? (s.totalValue / totalPlatformValue) * 100 : 0;
                   const sym = currSym(s.currency);
                   return (
                     <motion.tr key={s.symbol || i}
                       initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.025 }}
-                      className="border-b border-white/5 hover:bg-white/5 transition-colors group">
+                      onClick={() => navigate(`/admin/stock/${s.symbol}`)}
+                      title={`View ${s.symbol} details`}
+                      className="border-b border-white/5 hover:bg-white/5 transition-colors group cursor-pointer">
 
                       {/* Rank */}
                       <td className="px-4 py-3.5">
@@ -608,65 +580,28 @@ export function AdminAllStocks() {
                         </div>
                       </td>
 
-                      {/* P/E Ratio */}
-                      <td className="px-4 py-3.5 text-sm text-gray-400">
-                        {s.peRatio > 0 ? s.peRatio.toFixed(2) : "—"}
-                      </td>
-
-                      {/* Dividend Yield */}
-                      <td className="px-4 py-3.5 text-sm text-gray-400">
-                        {s.divYield > 0 ? `${s.divYield.toFixed(2)}%` : "—"}
-                      </td>
-
-                      {/* Market Cap */}
-                      <td className="px-4 py-3.5 text-sm text-gray-400 whitespace-nowrap">
-                        {s.marketCap > 0 ? fmtMarketCap(s.marketCap, s.currency) : "—"}
-                      </td>
-
-                      {/* Users Holding */}
-                      <td className="px-4 py-3.5">
-                        {s.users > 0 ? (
-                          <div className="flex items-center gap-1.5">
-                            <Users className="w-3.5 h-3.5 text-violet-400" />
-                            <span className="text-sm text-white">{s.users}</span>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-gray-700">Not held</span>
-                        )}
-                      </td>
-
-                      {/* Platform AUM — always in INR (wallet is INR) */}
-                      <td className="px-4 py-3.5 text-sm text-white whitespace-nowrap">
-                        {s.totalValue > 0 ? `₹${s.totalValue.toLocaleString("en-IN",{maximumFractionDigits:0})}` : "—"}
-                      </td>
-
-                      {/* % of AUM */}
-                      <td className="px-4 py-3.5">
-                        {pct > 0 ? (
-                          <div className="flex items-center gap-2">
-                            <div className="w-14 h-1.5 bg-white/5 rounded-full overflow-hidden">
-                              <div className="h-full bg-violet-500 rounded-full"
-                                style={{ width: `${Math.min(100, pct * 5)}%` }} />
-                            </div>
-                            <span className="text-xs text-gray-400">{pct.toFixed(1)}%</span>
-                          </div>
-                        ) : <span className="text-xs text-gray-700">—</span>}
-                      </td>
-
-                      {/* Update button */}
+                      {/* Actions */}
                       <td className="px-4 py-3.5" onClick={e => e.stopPropagation()}>
-                        <button
-                          onClick={e => openUpdateModal(s, e)}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-500/10 border border-cyan-500/20 rounded-lg text-xs text-cyan-300 hover:bg-cyan-500/20 transition-all opacity-0 group-hover:opacity-100 whitespace-nowrap">
-                          <Edit2 className="w-3 h-3" /> Update
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={e => { e.stopPropagation(); setChartTarget(s); }}
+                            title="View interactive chart"
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-xs text-violet-300 hover:bg-violet-500/20 transition-all opacity-0 group-hover:opacity-100 whitespace-nowrap">
+                            <BarChart2 className="w-3 h-3" /> Chart
+                          </button>
+                          <button
+                            onClick={e => openUpdateModal(s, e)}
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-500/10 border border-cyan-500/20 rounded-lg text-xs text-cyan-300 hover:bg-cyan-500/20 transition-all opacity-0 group-hover:opacity-100 whitespace-nowrap">
+                            <Edit2 className="w-3 h-3" /> Update
+                          </button>
+                        </div>
                       </td>
                     </motion.tr>
                   );
                 })}
                 {filtered.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={14} className="px-5 py-12 text-center text-gray-600 text-sm">
+                    <td colSpan={8} className="px-5 py-12 text-center text-gray-600 text-sm">
                       No stocks match your filters
                     </td>
                   </tr>
@@ -805,6 +740,58 @@ export function AdminAllStocks() {
                   </div>
                 </div>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ══════════════════════════ INTERACTIVE CHART MODAL ═════════════════ */}
+      <AnimatePresence>
+        {chartTarget && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm"
+            onClick={() => setChartTarget(null)}>
+            <motion.div
+              initial={{ opacity: 0, scale: 0.96, y: 20 }} animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 20 }} transition={{ duration: 0.18 }}
+              onClick={e => e.stopPropagation()}
+              className="bg-[#0C1220] border border-violet-500/20 rounded-2xl w-full max-w-3xl shadow-2xl overflow-hidden">
+
+              {/* Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center overflow-hidden">
+                    {chartTarget.logo_url
+                      ? <img src={chartTarget.logo_url} alt={chartTarget.symbol} className="w-full h-full object-contain p-0.5" onError={e => { e.target.style.display = "none"; }} />
+                      : <span className="text-xs font-bold text-violet-300">{(chartTarget.symbol || "??").slice(0, 2)}</span>}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-bold text-white">{chartTarget.symbol}</span>
+                      <span className="text-sm font-semibold text-white">{fmtPrice(chartTarget.price, chartTarget.currency)}</span>
+                      <span className={`text-xs font-medium ${chartTarget.changePct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                        {chartTarget.changePct >= 0 ? "+" : ""}{chartTarget.changePct.toFixed(2)}%
+                      </span>
+                    </div>
+                    <div className="text-xs text-gray-500">{chartTarget.name}</div>
+                  </div>
+                </div>
+                <button onClick={() => setChartTarget(null)}
+                  className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/10 transition-all">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Chart */}
+              <div className="p-5">
+                <StockChart
+                  stockId={chartTarget.stock_id}
+                  symbol={chartTarget.symbol}
+                  currentPrice={chartTarget.price}
+                  currency="₹"
+                  accent="violet"
+                  height={300}
+                />
+              </div>
             </motion.div>
           </div>
         )}
@@ -952,42 +939,6 @@ export function AdminAllStocks() {
                             onChange={v => updateForm("week_52_low", v)}
                             error={formErrors.week_52_low} placeholder="0.00" />
                         </Field>
-                        <Field label={`Market Cap (${form.currency})`} error={formErrors.market_cap}>
-                          <PriceInput currency={form.currency} value={form.market_cap}
-                            onChange={v => updateForm("market_cap", v)}
-                            error={formErrors.market_cap} placeholder="e.g. 1500000000000" />
-                        </Field>
-                      </div>
-                    </section>
-
-                    {/* ── Fundamentals ── */}
-                    <section>
-                      <SectionTitle>Fundamentals</SectionTitle>
-                      <div className="grid grid-cols-2 gap-3">
-                        <Field label="P/E Ratio" error={formErrors.pe_ratio}>
-                          <input type="number" min="0" step="0.01" value={form.pe_ratio}
-                            onChange={e => updateForm("pe_ratio", e.target.value)}
-                            placeholder="e.g. 24.5"
-                            className={inputCls(formErrors.pe_ratio)} />
-                        </Field>
-                        <Field label="EPS" hint={currSym(form.currency)} error={formErrors.eps}>
-                          <input type="number" step="0.01" value={form.eps}
-                            onChange={e => updateForm("eps", e.target.value)}
-                            placeholder="e.g. 85.00"
-                            className={inputCls(formErrors.eps)} />
-                        </Field>
-                        <Field label="Dividend Yield (%)" hint="Optional">
-                          <input type="number" min="0" step="0.01" value={form.dividend_yield}
-                            onChange={e => updateForm("dividend_yield", e.target.value)}
-                            placeholder="e.g. 1.5"
-                            className={inputCls()} />
-                        </Field>
-                        <Field label="Beta" hint="Market sensitivity">
-                          <input type="number" step="0.01" value={form.beta}
-                            onChange={e => updateForm("beta", e.target.value)}
-                            placeholder="e.g. 1.2"
-                            className={inputCls()} />
-                        </Field>
                       </div>
                     </section>
 
@@ -1095,11 +1046,6 @@ export function AdminAllStocks() {
                               <div className="text-sm font-bold text-white">
                                 {fmtPrice(parseFloat(form.current_price || 0), form.currency)}
                               </div>
-                              {form.market_cap && (
-                                <div className="text-xs text-gray-600">
-                                  MCap {fmtMarketCap(parseFloat(form.market_cap), form.currency)}
-                                </div>
-                              )}
                             </div>
                           )}
                         </div>
@@ -1279,7 +1225,7 @@ function PriceInput({ currency, value, onChange, error, placeholder }) {
 //       // Falls back to stocks/list if overview doesn't return holdings data
 //       const [overviewRes, stocksRes] = await Promise.allSettled([
 //         fetch(`${API_BASE}/admin/stocks/overview`, { headers: authHdr() }),
-//         fetch(`${API_BASE}/stocks/list?per_page=100&sort_by=market_cap&order=desc`, { headers: authHdr() }),
+//         fetch(`${API_BASE}/stocks/list?per_page=100&sort_by=current_price&order=desc`, { headers: authHdr() }),
 //       ]);
 
 //       let overviewStocks = [];

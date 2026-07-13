@@ -3,17 +3,14 @@ import { useParams, useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
   ArrowLeft, Star, TrendingUp, TrendingDown,
-  Bell, BarChart2, Info, AlertCircle, CheckCircle,
+  Bell, BarChart2, AlertCircle, CheckCircle,
 } from "lucide-react";
-import {
-  AreaChart, Area, ResponsiveContainer, Tooltip, XAxis, YAxis,
-} from "recharts";
+import { StockChart } from "../../components/StockChart";
+import { StockTabs } from "../../components/StockTabs";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
 const authHdr  = () => ({ Authorization: `Bearer ${getToken()}` });
-
-const TFS = ["1D", "1W", "1M", "3M", "6M", "1Y"];
 
 // ── Load Razorpay script ──────────────────────────────────────────────────────
 const loadRazorpayScript = () =>
@@ -42,7 +39,6 @@ export function UserStockDetail() {
   const [loading,          setLoading]         = useState(true);
   const [error,            setError]           = useState("");
   const [myHolding,        setMyHolding]       = useState(null);
-  const [priceHistory,     setPriceHistory]    = useState([]);
   const [relatedNews,      setRelatedNews]     = useState([]);
 
   // watchlist
@@ -51,7 +47,6 @@ export function UserStockDetail() {
   const [watchlistItemId,  setWatchlistItemId] = useState(null);
 
   // trade panel
-  const [tf,           setTf]           = useState("3M");
   const [tradeType,    setT]            = useState("buy");
   const [orderType,    setOT]           = useState("market");
   const [qty,          setQty]          = useState("10");
@@ -73,31 +68,6 @@ export function UserStockDetail() {
     } catch { setError("Failed to load stock data."); }
     return null;
   }, [symbol]);
-
-  // CORRECT URL: /stocks/<stock_id>/price_history  (NOT /stocks/ticker/SYMBOL/price_history)
-  const fetchPriceHistory = useCallback(async (stockObj) => {
-    if (!stockObj?.stock_id) return;
-    try {
-      const res  = await fetch(
-        `${API_BASE}/stocks/${stockObj.stock_id}/price_history?interval=1d&limit=365`,
-        { headers: authHdr() }
-      );
-      const data = await res.json();
-      if (data.bool && data.response?.data?.length > 0) {
-        setPriceHistory(data.response.data.map((p) => ({
-          date:  (p.timestamp || p.date || "").slice(5, 10),
-          close: parseFloat(p.close || p.close_price || 0),
-        })));
-        return;
-      }
-    } catch { /* fall through to synthetic */ }
-    // Synthetic fallback
-    const base = parseFloat(stockObj.current_price || 100);
-    setPriceHistory(Array.from({ length: 90 }, (_, i) => {
-      const d = new Date(); d.setDate(d.getDate() - (89 - i));
-      return { date: `${d.getMonth()+1}/${d.getDate()}`, close: base * (1+(Math.random()-0.48)*0.04) };
-    }));
-  }, []);
 
   // CORRECT URL: /market_news/stock/<stock_id>  (NOT /market_news/stock/SYMBOL)
   const fetchRelatedNews = useCallback(async (stockObj) => {
@@ -353,7 +323,6 @@ export function UserStockDetail() {
           fetchUserHoldings(stockObj),
           fetchWatchlistStatus(stockObj),
           fetchWallet(),
-          fetchPriceHistory(stockObj),
           fetchRelatedNews(stockObj),
         ]);
       }
@@ -363,11 +332,6 @@ export function UserStockDetail() {
   }, [symbol]); // eslint-disable-line
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const getFilteredHistory = () => {
-    const daysMap = { "1D":1,"1W":7,"1M":30,"3M":90,"6M":180,"1Y":365 };
-    return priceHistory.slice(-(daysMap[tf]||90));
-  };
-  const filteredHistory = getFilteredHistory();
   const up     = (stock?.price_change_percent || 0) >= 0;
   const execPx = orderType==="market" ? (stock?.current_price||0) : (parseFloat(limitPx)||stock?.current_price||0);
   const total  = (parseFloat(qty)||0)*execPx;
@@ -472,56 +436,23 @@ export function UserStockDetail() {
               </div>
             )}
 
-            <div className="flex gap-1 mb-4">
-              {TFS.map(t=>(
-                <button key={t} onClick={()=>setTf(t)}
-                  className={`px-3 py-1.5 text-xs rounded-lg transition-all ${tf===t?"bg-cyan-500/20 text-cyan-400 border border-cyan-500/25":"text-gray-600 hover:text-gray-400"}`}>
-                  {t}
-                </button>
-              ))}
-            </div>
-
-            <div className="h-52">
-              {filteredHistory.length>0?(
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={filteredHistory}>
-                    <defs><linearGradient id="sdGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor={up?"#10B981":"#EF4444"} stopOpacity={0.2}/>
-                      <stop offset="95%" stopColor={up?"#10B981":"#EF4444"} stopOpacity={0}/>
-                    </linearGradient></defs>
-                    <XAxis dataKey="date" tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} interval="preserveStartEnd"/>
-                    <YAxis tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} domain={["auto","auto"]} tickFormatter={v=>`₹${v.toFixed(0)}`}/>
-                    <Tooltip contentStyle={{background:"#0C1220",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,fontSize:11}} formatter={v=>[`₹${v.toFixed(2)}`,"Price"]}/>
-                    <Area type="monotone" dataKey="close" stroke={up?"#10B981":"#EF4444"} strokeWidth={2} fill="url(#sdGrad)" dot={false}/>
-                  </AreaChart>
-                </ResponsiveContainer>
-              ):(
-                <div className="flex items-center justify-center h-full text-gray-600 text-sm">No chart data available</div>
-              )}
-            </div>
+            <StockChart
+              stockId={stock.stock_id}
+              symbol={stock.ticker_symbol}
+              currentPrice={stock.current_price}
+              currency="₹"
+              accent="cyan"
+              height={230}
+            />
           </div>
 
-          {/* Key statistics */}
-          <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-5">
-            <div className="flex items-center gap-2 mb-4"><Info className="w-4 h-4 text-gray-500"/><span className="text-sm font-medium text-white">Key Statistics</span></div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              {[
-                ["52W High",  stock.week_52_high  ?`₹${parseFloat(stock.week_52_high).toFixed(2)}` :"—"],
-                ["52W Low",   stock.week_52_low   ?`₹${parseFloat(stock.week_52_low).toFixed(2)}`  :"—"],
-                ["Market Cap",stock.market_cap    ?`₹${(stock.market_cap/1e9).toFixed(1)}B`        :"—"],
-                ["P/E Ratio", stock.pe_ratio      ?parseFloat(stock.pe_ratio).toFixed(1)            :"—"],
-                ["Volume",    stock.volume        ?(stock.volume>=1e6?`${(stock.volume/1e6).toFixed(1)}M`:`${stock.volume}`):"—"],
-                ["Sector",    stock.sector        ||"—"],
-                ["Exchange",  stock.exchange      ||"—"],
-                ["Dividend",  stock.dividend_yield?`${parseFloat(stock.dividend_yield).toFixed(2)}%`:"—"],
-              ].map(([l,v])=>(
-                <div key={l} className="bg-[#141C30] rounded-xl p-3">
-                  <div className="text-xs text-gray-600 mb-1">{l}</div>
-                  <div className="text-sm font-medium text-white">{v}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+          {/* Stats · Depth · Orders · Positions */}
+          <StockTabs
+            stock={stock}
+            myHolding={myHolding}
+            symbol={stock.ticker_symbol}
+            stockId={stock.stock_id}
+          />
 
           {/* Related news */}
           {relatedNews.length>0&&(
@@ -541,9 +472,9 @@ export function UserStockDetail() {
           )}
         </div>
 
-        {/* ── Right: trade panel ─────────────────────────────────────────── */}
-        <div className="space-y-5">
-          <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden sticky top-6">
+        {/* ── Right: trade panel (whole sidebar sticks together while scrolling) ── */}
+        <div className="space-y-5 self-start lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
+          <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
 
             <div className="grid grid-cols-2">
               {["buy","sell"].map(t=>(

@@ -554,13 +554,9 @@ def seed_stocks():
                 stock.currency      = s["currency"]
                 stock.isin          = s.get("isin")
                 # NO dummy trading data — price / change / volume / 52-week stay
-                # empty until a live refresh (Twelve Data) fills them. Only static
-                # reference fundamentals below are seeded.
-                stock.market_cap    = Decimal(str(s["market_cap"]))     if s.get("market_cap")     else None
-                stock.pe_ratio      = Decimal(str(s["pe_ratio"]))       if s.get("pe_ratio")       else None
-                stock.eps           = Decimal(str(s["eps"]))            if s.get("eps")            else None
-                stock.dividend_yield= Decimal(str(s["dividend_yield"])) if s.get("dividend_yield") is not None else None
-                stock.beta          = Decimal(str(s["beta"]))           if s.get("beta")           else None
+                # empty until a live Upstox refresh fills them. Fundamentals
+                # (market cap, P/E, EPS, dividend yield, beta) are intentionally
+                # NOT seeded: Upstox can't supply them, so we never store them.
                 stock.logo_url      = s.get("logo_url")
                 stock.website_url   = s.get("website_url")
                 stock.description   = s.get("description")
