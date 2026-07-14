@@ -69,18 +69,42 @@ export function StockTabs({ stock, myHolding, symbol, stockId, tabs, accent = "c
 
   const depth = useMemo(() => buildDepth(ltp), [ltp]);
 
-  const fetchOrders = useCallback(async () => {
+  const [cancellingId, setCancellingId] = useState(null);
+
+  const fetchOrders = useCallback(async (silent = false) => {
     if (!stockId) return;
-    setOrdersLoading(true);
+    if (!silent) setOrdersLoading(true);
     try {
       const res  = await fetch(`${API_BASE}/trade_orders/my?stock_id=${stockId}&per_page=25`, { headers: authHdr() });
       const data = await res.json();
       if (data.bool) setOrders(data.response?.orders || []);
     } catch { /* silent */ }
-    finally { setOrdersLoading(false); }
+    finally { if (!silent) setOrdersLoading(false); }
   }, [stockId]);
 
-  useEffect(() => { if (tab === "Orders") fetchOrders(); }, [tab, fetchOrders]);
+  // Cancel a pending/open order and optimistically refresh the list.
+  const cancelOrder = useCallback(async (orderId) => {
+    setCancellingId(orderId);
+    try {
+      const res  = await fetch(`${API_BASE}/trade_orders/${orderId}/cancel`, {
+        method: "POST",
+        headers: { ...authHdr(), "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Cancelled by user" }),
+      });
+      const data = await res.json();
+      if (data.bool) await fetchOrders(true);
+    } catch { /* silent */ }
+    finally { setCancellingId(null); }
+  }, [fetchOrders]);
+
+  // Load when the Orders tab opens, then poll every 10s (matching the engine's
+  // cadence) so a PENDING order visibly flips to FILLED as soon as it triggers.
+  useEffect(() => {
+    if (tab !== "Orders") return;
+    fetchOrders();
+    const id = setInterval(() => fetchOrders(true), 10000);
+    return () => clearInterval(id);
+  }, [tab, fetchOrders]);
 
   // ── Stats rows ──────────────────────────────────────────────────────────────
   const statRows = [
@@ -206,16 +230,35 @@ export function StockTabs({ stock, myHolding, symbol, stockId, tabs, accent = "c
                       <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${o.order_side === "BUY" ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
                         {o.order_side}
                       </span>
+                      <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border ${(o.trade_mode || "DELIVERY") === "INTRADAY" ? "text-violet-300 bg-violet-500/10 border-violet-500/20" : "text-cyan-300 bg-cyan-500/10 border-cyan-500/20"}`}>
+                        {(o.trade_mode || "DELIVERY") === "INTRADAY" ? "INTRADAY" : "DELIVERY"}
+                      </span>
                       <div className="min-w-0">
                         <div className="text-sm text-white">{o.quantity} qty · {o.order_type}</div>
                         <div className="text-[11px] text-gray-600">
-                          {o.avg_fill_price ? `@ ${inr(o.avg_fill_price)}` : o.limit_price ? `Limit ${inr(o.limit_price)}` : "Market"} · {new Date(o.submitted_at).toLocaleString()}
+                          {o.avg_fill_price
+                            ? `@ ${inr(o.avg_fill_price)}`
+                            : o.stop_price
+                              ? `Stop ${inr(o.stop_price)}`
+                              : o.limit_price
+                                ? `Limit ${inr(o.limit_price)}`
+                                : "Market"} · {new Date(o.submitted_at).toLocaleString()}
                         </div>
                       </div>
                     </div>
-                    <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${statusColor(o.order_status)}`}>
-                      {o.order_status}
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${statusColor(o.order_status)}`}>
+                        {o.order_status}
+                      </span>
+                      {["PENDING", "OPEN", "PARTIALLY_FILLED"].includes(String(o.order_status).toUpperCase()) && (
+                        <button
+                          onClick={() => cancelOrder(o.order_id)}
+                          disabled={cancellingId === o.order_id}
+                          className="text-[10px] font-semibold px-2 py-0.5 rounded border border-red-500/30 text-red-400 hover:bg-red-500/10 disabled:opacity-50 transition-all">
+                          {cancellingId === o.order_id ? "…" : "Cancel"}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 ))}
                 <button onClick={() => navigate("/user/transactions")}

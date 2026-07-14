@@ -10,6 +10,10 @@ class PortfolioHoldings(db.Model):
     stock_id = db.Column(db.Integer, db.ForeignKey('stocks.stock_id'), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.user_id'), nullable=False, index=True)
 
+    # DELIVERY holdings stay in the portfolio until sold; INTRADAY holdings are
+    # separate positions (OPEN while is_active, CLOSED when fully sold).
+    trade_mode = db.Column(db.String(10), default='DELIVERY', index=True)  # DELIVERY, INTRADAY
+
     # Position details
     quantity = db.Column(db.Numeric(15, 6), nullable=False)            # Supports fractional shares
     average_buy_price = db.Column(db.Numeric(15, 4), nullable=False)   # Weighted average cost basis
@@ -38,8 +42,14 @@ class PortfolioHoldings(db.Model):
     created_on = db.Column(db.DateTime, default=datetime.now)
     updated_on = db.Column(db.DateTime, default=datetime.now, onupdate=datetime.now)
 
+    # NOTE: intentionally NOT unique on (portfolio_id, stock_id). A stock can be
+    # held simultaneously as a DELIVERY holding and an INTRADAY position, and an
+    # intraday position can be opened → closed → re-opened (leaving several CLOSED
+    # rows). The order engine guarantees at most one ACTIVE row per
+    # (portfolio, stock, trade_mode) via its is_active lookup, so a plain
+    # non-unique index is enough here.
     __table_args__ = (
-        db.UniqueConstraint('portfolio_id', 'stock_id', name='uq_portfolio_stock'),
+        db.Index('ix_portfolio_stock_mode', 'portfolio_id', 'stock_id', 'trade_mode'),
     )
 
     # Relationships

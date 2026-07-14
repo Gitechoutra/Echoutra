@@ -48,8 +48,9 @@ export function UserStockDetail() {
 
   // trade panel
   const [tradeType,    setT]            = useState("buy");
+  const [tradeMode,    setTradeMode]    = useState("delivery");   // delivery | intraday
   const [orderType,    setOT]           = useState("market");
-  const [qty,          setQty]          = useState("10");
+  const [qty,          setQty]          = useState("0");
   const [limitPx,      setLimitPx]      = useState("");
   const [confirm,      setConfirm]      = useState(false);
   const [placeErr,     setPlaceErr]     = useState("");
@@ -178,136 +179,61 @@ export function UserStockDetail() {
       setPlaceErr("Enter a valid limit/stop price."); return;
     }
 
-    // ── SELL — direct order placement ────────────────────────────────────
-    if (tradeType === "sell") {
+    // ── Wallet-based order placement (ALL orders) ─────────────────────────
+    // Every order — BUY/SELL, MARKET/LIMIT/STOP — is placed through the wallet:
+    //   • MARKET      → executes immediately, deducting (BUY) / crediting (SELL)
+    //                   the wallet balance right away.
+    //   • LIMIT/STOP  → reserves buying power (BUY) or shares (SELL) and sits
+    //                   PENDING until the engine triggers it on live price.
+    // Funds are added separately via Settings → Wallet → Add Money (Razorpay).
+    // Frontend owned-check only for Delivery (myHolding tracks the delivery
+    // holding). Intraday positions are validated by the backend per trade_mode.
+    if (tradeType === "sell" && tradeMode === "delivery") {
       const owned = parseFloat(myHolding?.quantity || 0);
       if (owned < quantity) {
         setPlaceErr(`Insufficient shares. You own ${owned} share(s) of ${symbol}.`); return;
       }
-      setPlacingOrder(true);
-      try {
-        const body = {
-          stock_id:       stock.stock_id,        // int  (required)
-          order_side:     "SELL",                // str  (required)
-          order_type:     orderType.toUpperCase(),
-          quantity:       quantity,
-          order_duration: "DAY",
-        };
-        if (orderType !== "market" && limitPx) body.limit_price = parseFloat(limitPx);
-
-        const res = await fetch(`${API_BASE}/trade_orders/place`, {
-          method: "POST",
-          headers: { ...authHdr(), "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        let data;
-        try { data = await res.json(); }
-        catch { setPlaceErr(`Server error (${res.status}).`); return; }
-
-        if (data.bool) {
-          setConfirm(false); setPlaced(true);
-          setTimeout(() => setPlaced(false), 4000);
-          await Promise.all([fetchUserHoldings(stock), fetchWallet()]);
-          setQty("10"); setLimitPx(""); setPlaceErr("");
-        } else {
-          setPlaceErr(data.response?.message || "Failed to place sell order.");
-        }
-      } catch { setPlaceErr("Network error. Please try again."); }
-      finally { setPlacingOrder(false); }
-      return;
     }
-
-    // ── BUY — Razorpay payment flow ───────────────────────────────────────
-    const execPrice   = orderType === "market" ? (stock.current_price || 0) : parseFloat(limitPx);
-    const totalAmount = quantity * execPrice;
-    if (totalAmount <= 0) { setPlaceErr("Invalid order amount."); return; }
 
     setPlacingOrder(true);
     try {
-      // 1. Load Razorpay SDK
-      const loaded = await loadRazorpayScript();
-      if (!loaded || !window.Razorpay) {
-        setPlaceErr("Payment gateway failed to load. Check your connection."); return;
-      }
+      const body = {
+        stock_id:       stock.stock_id,        // int  (required)
+        order_side:     tradeType.toUpperCase(),
+        order_type:     orderType.toUpperCase(),
+        trade_mode:     tradeMode.toUpperCase(),   // DELIVERY | INTRADAY
+        quantity:       quantity,
+        order_duration: "DAY",
+      };
+      // limit → limit_price; stop → stop_price
+      if (orderType === "limit" && limitPx) body.limit_price = parseFloat(limitPx);
+      if (orderType === "stop"  && limitPx) body.stop_price  = parseFloat(limitPx);
 
-      // 2. Create Razorpay order — POST /payment/create_order
-      const createRes = await fetch(`${API_BASE}/payments/create_order`, {
+      const res = await fetch(`${API_BASE}/trade_orders/place`, {
         method: "POST",
         headers: { ...authHdr(), "Content-Type": "application/json" },
-        body: JSON.stringify({
-          amount:     totalAmount,
-          stock_id:   stock.stock_id,
-          quantity:   quantity,
-          order_data: {
-            stock_id:       stock.stock_id,
-            order_type:     orderType.toUpperCase(),
-            order_duration: "DAY",
-            limit_price:    orderType !== "market" ? parseFloat(limitPx) : null,
-          },
-        }),
+        body: JSON.stringify(body),
       });
-      let createData;
-      try { createData = await createRes.json(); }
-      catch { setPlaceErr(`Server error (${createRes.status}). Could not create payment.`); return; }
+      let data;
+      try { data = await res.json(); }
+      catch { setPlaceErr(`Server error (${res.status}).`); return; }
 
-      if (!createData.bool) {
-        setPlaceErr(createData.response?.message || "Failed to create payment order."); return;
+      if (data.bool) {
+        setConfirm(false); setPlaced(true);
+        setTimeout(() => setPlaced(false), 4000);
+        await Promise.all([fetchUserHoldings(stock), fetchWallet()]);
+        setQty("0"); setLimitPx(""); setPlaceErr("");
+      } else {
+        const msg = data.response?.message || "Failed to place order.";
+        // Insufficient wallet funds → point the user at Add Money.
+        setPlaceErr(
+          msg.toLowerCase().includes("insufficient funds")
+            ? `${msg} Add money to your wallet in Settings → Wallet, then try again.`
+            : msg
+        );
       }
-      const razorpayOrder = createData.response;
-
-      // 3. Open Razorpay checkout and wait for result
-      await new Promise((resolve, reject) => {
-        const options = {
-          key:         razorpayOrder.key_id,
-          amount:      razorpayOrder.amount_paise || razorpayOrder.amount,
-          currency:    razorpayOrder.currency || "INR",
-          name:        "TradeFlow",
-          description: `Buy ${quantity} share(s) of ${symbol}`,
-          order_id:    razorpayOrder.order_id,
-          handler: async (paymentResponse) => {
-            // 4. Verify + place trade — POST /payment/verify
-            try {
-              const verifyRes = await fetch(`${API_BASE}/payments/verify`, {
-                method: "POST",
-                headers: { ...authHdr(), "Content-Type": "application/json" },
-                body: JSON.stringify({
-                  razorpay_order_id:   paymentResponse.razorpay_order_id,
-                  razorpay_payment_id: paymentResponse.razorpay_payment_id,
-                  razorpay_signature:  paymentResponse.razorpay_signature,
-                  order_data: {
-                    stock_id:       stock.stock_id,
-                    order_type:     orderType.toUpperCase(),
-                    order_duration: "DAY",
-                    limit_price:    orderType !== "market" ? parseFloat(limitPx) : null,
-                  },
-                }),
-              });
-              let verifyData;
-              try { verifyData = await verifyRes.json(); }
-              catch { reject(new Error(`Server error (${verifyRes.status}).`)); return; }
-              if (verifyData.bool) resolve(verifyData.response);
-              else reject(new Error(verifyData.response?.message || "Payment verification failed."));
-            } catch (e) { reject(e); }
-          },
-          theme: { color: "#06b6d4" },
-          modal: { ondismiss: () => reject(new Error("Payment cancelled.")) },
-        };
-        const rzp = new window.Razorpay(options);
-        rzp.on("payment.failed", (r) => reject(new Error(r.error?.description || "Payment failed.")));
-        rzp.open();
-      });
-
-      // Success
-      setConfirm(false); setPlaced(true);
-      setTimeout(() => setPlaced(false), 4000);
-      await Promise.all([fetchUserHoldings(stock), fetchWallet()]);
-      setQty("10"); setLimitPx(""); setPlaceErr("");
-
-    } catch (err) {
-      setPlaceErr(err.message || "Payment failed. Please try again.");
-    } finally {
-      setPlacingOrder(false);
-    }
+    } catch { setPlaceErr("Network error. Please try again."); }
+    finally { setPlacingOrder(false); }
   };
 
   // ── Effects ───────────────────────────────────────────────────────────────
@@ -486,17 +412,45 @@ export function UserStockDetail() {
             </div>
 
             <div className="p-5 space-y-4">
-              {/* Order type */}
+              {/* Trading mode — Delivery vs Intraday (Upstox-style) */}
+              <div>
+                <label className="text-xs text-gray-500 mb-2 block">Product</label>
+                <div className="flex gap-2">
+                  {[
+                    { key:"delivery", label:"Delivery", hint:"Held in portfolio" },
+                    { key:"intraday", label:"Intraday", hint:"Square off later" },
+                  ].map(m=>(
+                    <button key={m.key}
+                      onClick={()=>{
+                        setTradeMode(m.key);
+                        // Delivery is Market-only — reset any Limit/Stop selection.
+                        if(m.key==="delivery"){ setOT("market"); setLimitPx(""); }
+                        setPlaceErr("");
+                      }}
+                      className={`flex-1 py-2 rounded-xl border transition-all ${tradeMode===m.key?"border-cyan-500/50 bg-cyan-500/10 text-cyan-400":"border-white/8 bg-[#141C30] text-gray-500"}`}>
+                      <div className="text-xs font-medium capitalize">{m.label}</div>
+                      <div className="text-[10px] text-gray-600">{m.hint}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Order type — Delivery = Market only; Intraday adds Limit / Stop */}
               <div>
                 <label className="text-xs text-gray-500 mb-2 block">Order Type</label>
                 <div className="flex gap-2">
-                  {["market","limit","stop"].map(ot=>(
+                  {(tradeMode==="intraday" ? ["market","limit","stop"] : ["market"]).map(ot=>(
                     <button key={ot} onClick={()=>{setOT(ot);setLimitPx("");}}
                       className={`flex-1 py-2 text-xs rounded-xl capitalize border transition-all ${orderType===ot?"border-cyan-500/50 bg-cyan-500/10 text-cyan-400":"border-white/8 bg-[#141C30] text-gray-500"}`}>
                       {ot}
                     </button>
                   ))}
                 </div>
+                {tradeMode==="delivery" && (
+                  <div className="text-[10px] text-gray-600 mt-1.5">
+                    Delivery supports Market orders only. Switch to Intraday for Limit / Stop-loss.
+                  </div>
+                )}
               </div>
 
               {/* Quantity */}
@@ -511,7 +465,7 @@ export function UserStockDetail() {
                 <div>
                   <label className="text-xs text-gray-500 mb-2 block">{orderType==="limit"?"Limit":"Stop"} Price</label>
                   <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">$</span>
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">₹</span>
                     <input type="number" value={limitPx} onChange={e=>setLimitPx(e.target.value)}
                       placeholder={stock.current_price?.toFixed(2)}
                       className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30"/>
@@ -534,9 +488,14 @@ export function UserStockDetail() {
                 Buying Power: <span className="text-white">₹{buyingPower.toLocaleString("en",{minimumFractionDigits:2})}</span>
               </div>
 
-              {tradeType==="buy"&&(
+              {tradeType==="buy"&&orderType==="market"&&(
                 <div className="px-3 py-2 bg-cyan-500/8 border border-cyan-500/20 rounded-xl text-xs text-cyan-400 text-center">
-                  Payment via Razorpay gateway
+                  Paid from wallet balance · deducted instantly
+                </div>
+              )}
+              {tradeType==="buy"&&orderType!=="market"&&(
+                <div className="px-3 py-2 bg-amber-500/8 border border-amber-500/20 rounded-xl text-xs text-amber-400 text-center">
+                  Reserves wallet buying power · fills automatically when triggered
                 </div>
               )}
 
@@ -593,6 +552,7 @@ export function UserStockDetail() {
                 {[
                   ["Action",     tradeType==="buy"?"Buy":"Sell"],
                   ["Symbol",     stock.ticker_symbol],
+                  ["Product",    tradeMode.toUpperCase()],
                   ["Order Type", orderType.toUpperCase()],
                   ["Quantity",   `${qty} shares`],
                   ["Price",      `₹${execPx.toFixed(2)}`],
@@ -605,9 +565,14 @@ export function UserStockDetail() {
                 ))}
               </div>
 
-              {tradeType==="buy"&&(
+              {tradeType==="buy"&&orderType==="market"&&(
                 <div className="mb-4 p-3 bg-cyan-500/10 rounded-xl border border-cyan-500/20 text-xs text-cyan-400 text-center">
-                  Clicking Confirm will open the Razorpay payment gateway.
+                  ₹{total.toLocaleString("en",{maximumFractionDigits:2})} will be deducted from your wallet balance.
+                </div>
+              )}
+              {tradeType==="buy"&&orderType!=="market"&&(
+                <div className="mb-4 p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 text-xs text-amber-400 text-center">
+                  This {orderType.toUpperCase()} order reserves wallet funds and fills automatically when the price is reached.
                 </div>
               )}
 

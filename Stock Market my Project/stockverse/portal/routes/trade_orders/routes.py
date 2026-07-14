@@ -7,7 +7,7 @@ from flask import jsonify
 from flask_restx import Namespace, Resource, reqparse
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 
-from portal.models.trade_orders       import TradeOrders, OrderType, OrderSide, OrderStatus, OrderDuration
+from portal.models.trade_orders       import TradeOrders, OrderType, OrderSide, OrderStatus, OrderDuration, TradeMode
 from portal.models.trade_executions   import TradeExecutions
 from portal.models.portfolio_holdings import PortfolioHoldings
 from portal.models.portfolios         import Portfolios
@@ -16,7 +16,8 @@ from portal.models.wallet_transactions import WalletTransactions, WalletTransact
 from portal.models.transactions       import Transactions, TxnType, TxnStatus
 from portal.models.stocks             import Stocks
 from portal.models.audit_logs         import AuditLogs
-# from portal import db
+from portal.helpers.order_engine      import execute_order as engine_execute_order
+from portal import db
 
 from . import ns, logger
 
@@ -30,6 +31,7 @@ place_parser.add_argument('quantity',      type=float, required=True,  location=
 place_parser.add_argument('limit_price',   type=float, required=False, location='json')
 place_parser.add_argument('stop_price',    type=float, required=False, location='json')
 place_parser.add_argument('order_duration',type=str,   required=False, location='json', default='DAY')
+place_parser.add_argument('trade_mode',    type=str,   required=False, location='json', default='DELIVERY')  # DELIVERY / INTRADAY
 place_parser.add_argument('portfolio_id',  type=int,   required=False, location='json')
 
 cancel_parser = reqparse.RequestParser()
@@ -41,6 +43,7 @@ list_parser.add_argument('per_page',   type=int, default=20,   location='args')
 list_parser.add_argument('status',     type=str, required=False, location='args')
 list_parser.add_argument('order_side', type=str, required=False, location='args')
 list_parser.add_argument('stock_id',   type=int, required=False, location='args')
+list_parser.add_argument('trade_mode', type=str, required=False, location='args')
 
 admin_list_parser = reqparse.RequestParser()
 admin_list_parser.add_argument('page',     type=int, default=1,  location='args')
@@ -62,6 +65,7 @@ def _order_dict(o: TradeOrders) -> dict:
         'order_side':       o.order_side,
         'order_status':     o.order_status,
         'order_duration':   o.order_duration,
+        'trade_mode':       o.trade_mode or 'DELIVERY',
         'quantity':         float(o.quantity),
         'filled_quantity':  float(o.filled_quantity),
         'remaining_quantity': float(o.remaining_quantity) if o.remaining_quantity else None,
@@ -80,168 +84,12 @@ def _order_dict(o: TradeOrders) -> dict:
 
 def _execute_market_order(order: TradeOrders, stock: Stocks, wallet: Wallets, portfolio: Portfolios):
     """
-    Simulate an immediate market-order fill.
-    In production, wire this to the broker/exchange integration.
+    Immediate MARKET fill at the stock's current price. Delegates to the shared
+    order engine so market, limit and stop fills all update the wallet, holdings,
+    ledgers and portfolio through one consistent code path.
+    `funds_locked=False` — a MARKET order placed here settles from available cash.
     """
-    execution_price  = Decimal(str(stock.current_price or 0))
-    quantity         = Decimal(str(order.quantity))
-    execution_amount = quantity * execution_price
-    commission       = execution_amount * Decimal('0.001')   # 0.1% fee
-    net_amount       = execution_amount + commission if order.order_side == OrderSide.BUY else execution_amount - commission
-
-    # ── Record execution ──────────────────────────────────────────────────────
-    exec_rec                   = TradeExecutions()
-    exec_rec.order_id          = order.order_id
-    exec_rec.user_id           = order.user_id
-    exec_rec.stock_id          = order.stock_id
-    exec_rec.executed_quantity = quantity
-    exec_rec.execution_price   = execution_price
-    exec_rec.execution_amount  = execution_amount
-    exec_rec.commission        = commission
-    exec_rec.total_fee         = commission
-    exec_rec.net_amount        = net_amount
-    exec_rec.executed_at       = datetime.now(timezone.utc)
-    exec_rec.save()
-
-    # ── Update order  ───
-    order.order_status      = OrderStatus.FILLED
-    order.filled_quantity   = quantity
-    order.remaining_quantity= Decimal('0')
-    order.avg_fill_price    = execution_price
-    order.filled_amount     = execution_amount
-    order.total_fee         = commission
-    order.filled_at         = datetime.now(timezone.utc)
-    order.update()
-
-    # ── Update wallet  ──
-    if order.order_side == OrderSide.BUY:
-        wallet.balance           -= net_amount
-        wallet.available_balance -= net_amount
-    else:
-        wallet.balance           += net_amount
-        wallet.available_balance += net_amount
-    wallet.total_invested = (wallet.total_invested or Decimal('0')) + (net_amount if order.order_side == OrderSide.BUY else Decimal('0'))
-    wallet.last_transaction_at = datetime.now(timezone.utc)
-    wallet.update()
-
-    # ── Wallet transaction ledger ─────────────────────────────────────────────
-    wt                 = WalletTransactions()
-    wt.wallet_id       = wallet.wallet_id
-    wt.user_id         = order.user_id
-    wt.transaction_type= WalletTransactionType.BUY_STOCK if order.order_side == OrderSide.BUY else WalletTransactionType.SELL_STOCK
-    wt.status          = WalletTransactionStatus.COMPLETED
-    wt.amount          = execution_amount
-    wt.fee             = commission
-    wt.net_amount      = net_amount
-    wt.reference_type  = 'TRADE_ORDER'
-    wt.reference_id    = order.order_id
-    wt.completed_at    = datetime.now(timezone.utc)
-    wt.save()
-
-    # ── Master transactions ledger ────────────────────────────────────────────
-    txn                = Transactions()
-    txn.user_id        = order.user_id
-    txn.txn_type       = TxnType.BUY if order.order_side == OrderSide.BUY else TxnType.SELL
-    txn.txn_status     = TxnStatus.COMPLETED
-    txn.stock_id       = order.stock_id
-    txn.order_id       = order.order_id
-    txn.portfolio_id   = order.portfolio_id
-    txn.wallet_txn_id  = wt.wallet_txn_id
-    txn.quantity       = quantity
-    txn.price_per_unit = execution_price
-    txn.gross_amount   = execution_amount
-    txn.fee            = commission
-    txn.net_amount     = net_amount
-    txn.transacted_at  = datetime.now(timezone.utc)
-    txn.save()
-
-    # ── Update portfolio holding ──────────────────────────────────────────────
-    if order.order_side == OrderSide.BUY:
-        holding = PortfolioHoldings.query.filter_by(
-            portfolio_id=order.portfolio_id, stock_id=order.stock_id, is_active=True
-        ).first()
-        if holding:
-            old_qty    = Decimal(str(holding.quantity))
-            old_cost   = Decimal(str(holding.total_invested))
-            new_qty    = old_qty + quantity
-            new_cost   = old_cost + execution_amount
-            holding.quantity          = new_qty
-            holding.total_invested    = new_cost
-            holding.average_buy_price = new_cost / new_qty
-            holding.last_traded_at    = datetime.now(timezone.utc)
-            holding.update()
-        else:
-            holding                   = PortfolioHoldings()
-            holding.portfolio_id      = order.portfolio_id
-            holding.stock_id          = order.stock_id
-            holding.user_id           = order.user_id
-            holding.quantity          = quantity
-            holding.average_buy_price = execution_price
-            holding.total_invested    = execution_amount
-            holding.first_bought_at   = datetime.now(timezone.utc)
-            holding.last_traded_at    = datetime.now(timezone.utc)
-            holding.save()
-    else:
-        # SELL — reduce or close holding
-        holding = PortfolioHoldings.query.filter_by(
-            portfolio_id=order.portfolio_id, stock_id=order.stock_id, is_active=True
-        ).first()
-        if holding:
-            sell_qty   = quantity
-            cost_basis = Decimal(str(holding.average_buy_price)) * sell_qty
-            realized   = execution_amount - cost_basis
-            new_qty    = Decimal(str(holding.quantity)) - sell_qty
-            holding.realized_pnl  = (holding.realized_pnl or Decimal('0')) + realized
-            if new_qty <= Decimal('0'):
-                holding.quantity  = Decimal('0')
-                holding.is_active = False
-            else:
-                holding.quantity      = new_qty
-                holding.total_invested= new_qty * Decimal(str(holding.average_buy_price))
-            holding.last_traded_at = datetime.now(timezone.utc)
-            holding.update()
-
-    # ── Re-value the portfolio from current market prices ─────────────────────
-    # FIX: previously the holding's market-value fields (current_price /
-    # current_value / unrealized_pnl) and the portfolio roll-up were never set
-    # on execution, so portfolio.current_value stayed 0 and platform AUM always
-    # showed ₹0 even after real trades. Recompute both here.
-    _revalue_portfolio(portfolio)
-
-    return exec_rec
-
-
-def _revalue_portfolio(portfolio: Portfolios):
-    """Recompute every active holding's market value and the portfolio totals
-    from the stocks' current prices. Safe to call after any fill."""
-    holdings   = PortfolioHoldings.query.filter_by(
-        portfolio_id=portfolio.portfolio_id, is_active=True
-    ).all()
-    port_value    = Decimal('0')
-    port_invested = Decimal('0')
-    for h in holdings:
-        stock = Stocks.query.get(h.stock_id)
-        px    = Decimal(str(stock.current_price or 0)) if stock else Decimal('0')
-        qty   = Decimal(str(h.quantity or 0))
-        inv   = Decimal(str(h.total_invested or 0))
-        val   = qty * px
-        h.current_price          = px
-        h.current_value          = val
-        h.unrealized_pnl         = val - inv
-        h.unrealized_pnl_percent = ((val - inv) / inv * 100) if inv > 0 else Decimal('0')
-        port_value    += val
-        port_invested += inv
-    # Allocation % per holding (needs the portfolio total first)
-    for h in holdings:
-        h.allocation_percent = ((Decimal(str(h.current_value or 0)) / port_value) * 100) if port_value > 0 else Decimal('0')
-
-    portfolio.total_invested       = port_invested
-    portfolio.current_value        = port_value
-    portfolio.unrealized_pnl       = port_value - port_invested
-    portfolio.total_return         = port_value - port_invested
-    portfolio.total_return_percent = ((port_value - port_invested) / port_invested * 100) if port_invested > 0 else Decimal('0')
-    portfolio.total_holdings_count = len(holdings)
-    portfolio.update()
+    return engine_execute_order(order, stock.current_price or 0, funds_locked=False)
 
 
 # ── Place Order  ─────────
@@ -263,6 +111,7 @@ class PlaceOrder(Resource):
             stock_id     = args['stock_id']
             order_side   = args['order_side'].upper()
             order_type   = args['order_type'].upper()
+            trade_mode   = (args.get('trade_mode') or TradeMode.DELIVERY).upper()
             quantity     = Decimal(str(args['quantity']))
             portfolio_id = args.get('portfolio_id')
 
@@ -271,6 +120,13 @@ class PlaceOrder(Resource):
                 return jsonify(bool=False, status=400, response={'message': 'order_side must be BUY or SELL.'})
             if order_type not in [OrderType.MARKET, OrderType.LIMIT, OrderType.STOP, OrderType.STOP_LIMIT]:
                 return jsonify(bool=False, status=400, response={'message': 'Invalid order_type.'})
+            if trade_mode not in TradeMode.CHOICES:
+                return jsonify(bool=False, status=400, response={'message': 'trade_mode must be DELIVERY or INTRADAY.'})
+            # Delivery is a cash-and-carry buy/sell — Market orders only. Limit &
+            # Stop-loss are reserved for Intraday.
+            if trade_mode == TradeMode.DELIVERY and order_type != OrderType.MARKET:
+                return jsonify(bool=False, status=400, response={
+                    'message': 'Delivery supports Market orders only. Use Intraday for Limit / Stop orders.'})
             if quantity <= 0:
                 return jsonify(bool=False, status=400, response={'message': 'Quantity must be > 0.'})
 
@@ -305,11 +161,20 @@ class PlaceOrder(Resource):
             if not wallet:
                 return jsonify(bool=False, status=404, response={'message': 'Wallet not found.'})
 
+            # Queued order types need their trigger price(s).
+            if order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT) and not args.get('limit_price'):
+                return jsonify(bool=False, status=400, response={'message': 'limit_price is required for LIMIT orders.'})
+            if order_type in (OrderType.STOP, OrderType.STOP_LIMIT) and not args.get('stop_price'):
+                return jsonify(bool=False, status=400, response={'message': 'stop_price is required for STOP orders.'})
+
             current_price   = Decimal(str(stock.current_price or 0))
-            execution_price = Decimal(str(args.get('limit_price') or current_price))
-            estimated_total = quantity * execution_price
+            # Reserve at the order's own price (limit → limit_price, stop → stop_price),
+            # falling back to the current market price for MARKET orders.
+            reserve_price   = Decimal(str(args.get('limit_price') or args.get('stop_price') or current_price))
+            estimated_total = quantity * reserve_price
             commission      = estimated_total * Decimal('0.001')
             estimated_cost  = estimated_total + commission
+            is_queued       = order_type != OrderType.MARKET
 
             # BUY: check wallet balance
             if order_side == OrderSide.BUY:
@@ -320,14 +185,16 @@ class PlaceOrder(Resource):
                         'available':       float(wallet.available_balance),
                     })
 
-            # SELL: check holding
+            # SELL: check holding within the SAME trade_mode (delivery holdings and
+            # intraday positions are independent).
             if order_side == OrderSide.SELL:
                 holding = PortfolioHoldings.query.filter_by(
-                    portfolio_id=portfolio_id, stock_id=stock_id, is_active=True
+                    portfolio_id=portfolio_id, stock_id=stock_id,
+                    trade_mode=trade_mode, is_active=True
                 ).first()
                 if not holding or Decimal(str(holding.quantity)) < quantity:
                     return jsonify(bool=False, status=400, response={
-                        'message':   'Insufficient shares to sell.',
+                        'message':   f'Insufficient {trade_mode.lower()} shares to sell.',
                         'available': float(holding.quantity) if holding else 0,
                         'requested': float(quantity),
                     })
@@ -339,6 +206,7 @@ class PlaceOrder(Resource):
             order.portfolio_id      = portfolio_id
             order.order_type        = order_type
             order.order_side        = order_side
+            order.trade_mode        = trade_mode
             order.order_status      = OrderStatus.PENDING
             order.order_duration    = args.get('order_duration', OrderDuration.DAY).upper()
             order.quantity          = quantity
@@ -351,11 +219,18 @@ class PlaceOrder(Resource):
             order.order_source      = 'WEB'
             order.save()
 
-            # Execute immediately for MARKET orders
+            # Execute immediately for MARKET orders; queue the rest for the engine.
             exec_rec = None
             if order_type == OrderType.MARKET:
                 portfolio_obj = Portfolios.query.get(portfolio_id)
                 exec_rec = _execute_market_order(order, stock, wallet, portfolio_obj)
+            elif order_side == OrderSide.BUY:
+                # Reserve buying power for a pending BUY LIMIT/STOP so the funds
+                # can't be spent elsewhere. Released on cancel/expiry, or settled
+                # from locked_balance when the engine fills the order.
+                wallet.locked_balance    = Decimal(str(wallet.locked_balance)) + estimated_cost
+                wallet.available_balance = Decimal(str(wallet.balance)) - Decimal(str(wallet.locked_balance))
+                wallet.update()
 
             log            = AuditLogs()
             log.user_id    = user_id
@@ -407,11 +282,14 @@ class CancelOrder(Resource):
             order.rejection_reason = args.get('reason', 'Cancelled by user')
             order.update()
 
-            # Release locked wallet balance for LIMIT BUY orders
+            # Release the reserved buying power for a pending BUY LIMIT/STOP order.
+            # The lock included commission (estimated_amount * 1.001), so release
+            # the same amount to keep available_balance = balance - locked.
             if order.order_side == OrderSide.BUY and order.order_type != OrderType.MARKET:
                 wallet = Wallets.query.filter_by(user_id=user_id).first()
                 if wallet and order.estimated_amount:
-                    wallet.locked_balance    = max(Decimal('0'), Decimal(str(wallet.locked_balance)) - Decimal(str(order.estimated_amount)))
+                    reserved = Decimal(str(order.estimated_amount)) * Decimal('1.001')
+                    wallet.locked_balance    = max(Decimal('0'), Decimal(str(wallet.locked_balance)) - reserved)
                     wallet.available_balance = Decimal(str(wallet.balance)) - Decimal(str(wallet.locked_balance))
                     wallet.update()
 
@@ -484,6 +362,8 @@ class MyOrders(Resource):
                 query = query.filter(TradeOrders.order_side == args['order_side'].upper())
             if args.get('stock_id'):
                 query = query.filter(TradeOrders.stock_id == args['stock_id'])
+            if args.get('trade_mode'):
+                query = query.filter(TradeOrders.trade_mode == args['trade_mode'].upper())
 
             paginated = query.order_by(TradeOrders.submitted_at.desc()).paginate(
                 page=page, per_page=per_page, error_out=False

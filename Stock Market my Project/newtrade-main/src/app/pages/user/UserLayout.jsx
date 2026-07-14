@@ -73,6 +73,17 @@ export function UserLayout() {
   const fetchNotifRef  = useRef(null);
   const marketIntervalRef = useRef(null);
   const notifIntervalRef  = useRef(null);
+  const notifRef          = useRef(null);   // wraps the bell + dropdown for click-outside
+
+  /* ── Close the notification dropdown on any click outside it ───────────── */
+  useEffect(() => {
+    if (!notifs) return;
+    const handleClickOutside = (e) => {
+      if (notifRef.current && !notifRef.current.contains(e.target)) setNotifs(false);
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [notifs]);
 
   /* ── Fetch market overview (ticker data) ─────────────────────────────────
      Uses /dashboard/user/market_overview — lighter endpoint, no CORS issues.
@@ -569,7 +580,7 @@ export function UserLayout() {
             </div>
 
             {/* Notifications */}
-            <div className="relative">
+            <div className="relative" ref={notifRef}>
               <button
                 onClick={toggleNotifs}
                 className="relative p-2 rounded-xl bg-[#141C30] border border-cyan-500/10 text-gray-500 hover:text-white transition-colors"

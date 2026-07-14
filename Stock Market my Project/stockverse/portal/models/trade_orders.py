@@ -39,6 +39,13 @@ class OrderDuration:
     CHOICES = [DAY, GTC, IOC, FOK]
 
 
+class TradeMode:
+    DELIVERY = "DELIVERY"   # Shares held in the portfolio until sold (Market only)
+    INTRADAY = "INTRADAY"   # Separate OPEN/CLOSED positions (Market/Limit/Stop)
+
+    CHOICES = [DELIVERY, INTRADAY]
+
+
 class TradeOrders(db.Model):
     __tablename__ = 'trade_orders'
 
@@ -51,6 +58,7 @@ class TradeOrders(db.Model):
     order_side = db.Column(db.String(10), nullable=False)         # BUY, SELL
     order_status = db.Column(db.String(25), default=OrderStatus.PENDING)
     order_duration = db.Column(db.String(5), default=OrderDuration.DAY)
+    trade_mode = db.Column(db.String(10), default=TradeMode.DELIVERY, index=True)  # DELIVERY, INTRADAY
 
     # Quantity
     quantity = db.Column(db.Numeric(15, 6), nullable=False)

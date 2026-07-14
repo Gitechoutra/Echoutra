@@ -66,6 +66,9 @@ def _holding_dict(h: PortfolioHoldings) -> dict:
         'company_name':           h.stock.company_name  if h.stock else None,
         'logo_url':               h.stock.logo_url      if h.stock else None,
         'sector':                 h.stock.sector        if h.stock else None,
+        'trade_mode':             h.trade_mode or 'DELIVERY',
+        'is_active':              bool(h.is_active),
+        'position_status':        ('OPEN' if h.is_active else 'CLOSED'),
         'quantity':               float(h.quantity),
         'average_buy_price':      float(h.average_buy_price),
         'total_invested':         float(h.total_invested),
@@ -149,8 +152,17 @@ class PortfolioDetail(Resource):
             if portfolio.user_id != user_id and claims.get('role') != 'ADMIN':
                 return jsonify(bool=False, status=403, response={'message': 'Access denied.'})
 
+            # ?include_closed=1 also returns CLOSED (fully-sold) intraday positions
+            # so the Portfolio "Positions" view can show closed trades.
+            from flask import request
+            include_closed = request.args.get('include_closed') in ('1', 'true', 'True')
+            hq = PortfolioHoldings.query.filter_by(portfolio_id=portfolio_id)
+            if not include_closed:
+                hq = hq.filter_by(is_active=True)
+
             data     = _portfolio_dict(portfolio)
-            holdings = PortfolioHoldings.query.filter_by(portfolio_id=portfolio_id, is_active=True).all()
+            holdings = hq.order_by(PortfolioHoldings.is_active.desc(),
+                                   PortfolioHoldings.last_traded_at.desc()).all()
             data['holdings'] = [_holding_dict(h) for h in holdings]
 
             return jsonify(bool=True, status=200, response=data)

@@ -197,79 +197,32 @@ class VerifyPayment(Resource):
             
             current_price = Decimal(str(stock.current_price or 0))
             quantity_dec = Decimal(str(quantity))
-            execution_amount = quantity_dec * current_price
-            commission = execution_amount * Decimal('0.001')
-            net_amount = execution_amount + commission
-            
-            # Create order record
+
+            # Create the order PENDING, then execute the fill through the shared
+            # order engine. The engine DEDUCTS the purchase cost from the wallet
+            # (previously this route only credited the deposit and never debited
+            # the buy — inflating the balance) and consistently updates the
+            # holding, ledgers and portfolio valuation.
             order = TradeOrders()
             order.user_id = user_id
             order.stock_id = stock_id
             order.portfolio_id = portfolio.portfolio_id
-            order.order_type = trade_order_data.get('order_type', 'MARKET')
+            order.order_type = trade_order_data.get('order_type') or 'MARKET'
             order.order_side = OrderSide.BUY
-            order.order_status = OrderStatus.FILLED
+            order.trade_mode = (trade_order_data.get('trade_mode') or 'DELIVERY').upper()
+            order.order_status = OrderStatus.PENDING
             order.order_duration = trade_order_data.get('order_duration', 'DAY')
             order.quantity = quantity_dec
-            order.filled_quantity = quantity_dec
-            order.remaining_quantity = Decimal('0')
-            order.avg_fill_price = current_price
-            order.filled_amount = execution_amount
-            order.total_fee = commission
+            order.filled_quantity = Decimal('0')
+            order.remaining_quantity = quantity_dec
+            order.estimated_amount = quantity_dec * current_price
             order.submitted_at = datetime.now(timezone.utc)
-            order.filled_at = datetime.now(timezone.utc)
             order.order_source = 'WEB'
             order.save()
-            
-            # Update portfolio holding
-            holding = PortfolioHoldings.query.filter_by(
-                portfolio_id=portfolio.portfolio_id, stock_id=stock_id, is_active=True
-            ).first()
-            
-            if holding:
-                old_qty = Decimal(str(holding.quantity))
-                old_cost = Decimal(str(holding.total_invested or 0))
-                new_qty = old_qty + quantity_dec
-                new_cost = old_cost + execution_amount
-                holding.quantity = new_qty
-                holding.total_invested = new_cost
-                holding.average_buy_price = new_cost / new_qty if new_qty > 0 else Decimal('0')
-                holding.last_traded_at = datetime.now(timezone.utc)
-                holding.update()
-            else:
-                holding = PortfolioHoldings()
-                holding.portfolio_id = portfolio.portfolio_id
-                holding.stock_id = stock_id
-                holding.user_id = user_id
-                holding.quantity = quantity_dec
-                holding.average_buy_price = current_price
-                holding.total_invested = execution_amount
-                holding.first_bought_at = datetime.now(timezone.utc)
-                holding.last_traded_at = datetime.now(timezone.utc)
-                holding.save()
-            
-            # Create transaction record
-            txn = Transactions()
-            txn.user_id = user_id
-            txn.txn_type = TxnType.BUY
-            txn.txn_status = TxnStatus.COMPLETED
-            txn.stock_id = stock_id
-            txn.order_id = order.order_id
-            txn.portfolio_id = portfolio.portfolio_id
-            txn.wallet_txn_id = wt.wallet_txn_id
-            txn.quantity = quantity_dec
-            txn.price_per_unit = current_price
-            txn.gross_amount = execution_amount
-            txn.fee = commission
-            txn.net_amount = net_amount
-            txn.transacted_at = datetime.now(timezone.utc)
-            txn.save()
-            
-            # Update portfolio totals
-            portfolio.total_invested = (portfolio.total_invested or Decimal('0')) + execution_amount
-            portfolio.current_value = (portfolio.current_value or Decimal('0')) + (quantity_dec * current_price)
-            portfolio.update()
-            
+
+            from portal.helpers.order_engine import execute_order as engine_execute_order
+            engine_execute_order(order, current_price, funds_locked=False)
+
             return jsonify(bool=True, status=200, response={
                 'message': 'Payment verified and trade order placed successfully',
                 'order_id': order.order_id,

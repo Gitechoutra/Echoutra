@@ -65,10 +65,16 @@ function fmtLabel(ms, fmt) {
   const d  = new Date(ms);
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
-  if (fmt === "time") return `${hh}:${mm}`;
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  // Intraday (1D) uses seconds so fast, real-time candles get unique x labels.
+  if (fmt === "time") return `${hh}:${mm}:${ss}`;
   if (fmt === "dt")   return `${d.getDate()}/${d.getMonth() + 1} ${hh}:${mm}`;
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
+
+// Real cadence (ms) at which the 1D chart rolls a fresh candle. Keeping this on
+// the wall clock is what makes the x-axis time *live* instead of racing ahead.
+const DISPLAY_STEP_MS = { "1D": 3000 };
 
 // Build a timeframe's OHLC series ending "now", anchored so the last close == price.
 export function genSeries(symbol, price, tf) {
@@ -102,25 +108,47 @@ export function genSeries(symbol, price, tf) {
   return out;
 }
 
-// Append one fresh bar at the next timestamp and drop the oldest → the chart
-// scrolls left with real, advancing time labels on the x-axis.
+// Advance the live chart on REAL wall-clock time so the x-axis and the graph
+// stay in sync:
+//   • 1D (intraday): the newest candle is a "forming" candle stamped at the
+//     current clock; it updates in place every tick and rolls to a new candle
+//     once real time crosses DISPLAY_STEP_MS — so the chart scrolls left with
+//     true, advancing timestamps instead of racing minutes into the future.
+//   • Higher timeframes (daily/weekly candles): only the current candle updates
+//     in place; a new candle would only appear at a real day/hour boundary.
 export function liveAppend(prev, tf) {
   if (!prev.length) return prev;
-  const cfg   = TF_CFG[tf] || TF_CFG["1D"];
-  const last  = prev[prev.length - 1];
-  const t     = last.t + cfg.stepMs;
-  const vol   = cfg.fmt === "time" ? 0.0018 : cfg.vol * 0.4;
-  const open  = last.close;
-  const close = Math.max(0.01, open * (1 + (Math.random() - 0.5) * 2 * vol));
-  const hi    = Math.max(open, close) * (1 + Math.random() * 0.004);
-  const lo    = Math.min(open, close) * (1 - Math.random() * 0.004);
+  const cfg      = TF_CFG[tf] || TF_CFG["1D"];
+  const intraday = cfg.fmt === "time";
+  const now      = Date.now();
+  const last     = prev[prev.length - 1];
+  const vol      = intraday ? 0.0018 : cfg.vol * 0.3;
+
+  // Roll a brand-new candle (1D only) once real time crosses the display step.
+  if (intraday && now - last.t >= (DISPLAY_STEP_MS[tf] || 3000)) {
+    const open  = last.close;
+    const close = Math.max(0.01, open * (1 + (Math.random() - 0.5) * 2 * vol));
+    const hi    = Math.max(open, close) * (1 + Math.random() * 0.004);
+    const lo    = Math.min(open, close) * (1 - Math.random() * 0.004);
+    const bar   = {
+      t: now, date: fmtLabel(now, cfg.fmt),
+      open: +open.toFixed(2), high: +hi.toFixed(2),
+      low: +lo.toFixed(2), close: +close.toFixed(2),
+      volume: Math.round(1e6 + Math.random() * 9e6),
+    };
+    return [...prev.slice(1), bar];
+  }
+
+  // Otherwise update the forming candle in place, stamped at the real clock.
+  const close = Math.max(0.01, last.close * (1 + (Math.random() - 0.5) * 2 * vol * 0.6));
   const bar   = {
-    t, date: fmtLabel(t, cfg.fmt),
-    open: +open.toFixed(2), high: +hi.toFixed(2),
-    low: +lo.toFixed(2), close: +close.toFixed(2),
-    volume: Math.round(1e6 + Math.random() * 9e6),
+    ...last,
+    t: now, date: fmtLabel(now, cfg.fmt),
+    close: +close.toFixed(2),
+    high:  +Math.max(last.high, close).toFixed(2),
+    low:   +Math.min(last.low,  close).toFixed(2),
   };
-  return [...prev.slice(1), bar];
+  return [...prev.slice(0, -1), bar];
 }
 
 // Snap the newest bar's close to the real market price (truthful re-anchor).
@@ -240,7 +268,9 @@ export function StockChart({ stockId, symbol, currentPrice, currency = "₹", ac
   const [loading,  setLoading] = useState(true);
   const [paused,   setPaused]  = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef(null);
+  const [zoom,     setZoom]    = useState(null);   // visible bar count; null = fit all
+  const menuRef  = useRef(null);
+  const chartRef = useRef(null);
 
   const accentCls = accent === "violet"
     ? { active: "bg-violet-500/20 text-violet-300 border-violet-500/25", ring: "focus:border-violet-500/30" }
@@ -277,8 +307,33 @@ export function StockChart({ stockId, symbol, currentPrice, currency = "₹", ac
     return () => document.removeEventListener("mousedown", h);
   }, [menuOpen]);
 
-  const data = series;
-  const livePrice = data.length ? data[data.length - 1].close : Number(currentPrice) || 0;
+  const livePrice = series.length ? series[series.length - 1].close : Number(currentPrice) || 0;
+
+  // Zoom: show only the last `zoom` bars (null = fit all). Everything that draws
+  // (axes, candle layers, domain) uses this sliced `data` so the chart — and only
+  // the chart — zooms. The browser page never zooms (see the wheel handler below).
+  const data = useMemo(() => {
+    if (!zoom || zoom >= series.length) return series;
+    return series.slice(series.length - zoom);
+  }, [series, zoom]);
+
+  // Chart-only zoom via a NON-passive wheel listener (React's onWheel is passive
+  // and cannot preventDefault). Wheel up = zoom in, down = zoom out.
+  useEffect(() => {
+    const el = chartRef.current;
+    if (!el) return;
+    const onWheel = (e) => {
+      e.preventDefault();
+      setZoom((z) => {
+        const cur  = z || series.length;
+        let next   = e.deltaY < 0 ? Math.round(cur * 0.85) : Math.round(cur * 1.18);
+        next       = Math.max(15, Math.min(series.length, next));
+        return next >= series.length ? null : next;
+      });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [series.length]);
 
   // Y domain from OHLC so wicks always fit
   const domain = useMemo(() => {
@@ -449,8 +504,16 @@ export function StockChart({ stockId, symbol, currentPrice, currency = "₹", ac
         </div>
       )}
 
-      {/* Chart */}
-      <div style={{ height }}>
+      {/* Chart — scroll-wheel zooms the chart only (touchAction:none stops the
+          browser page from zooming/scrolling). */}
+      <div ref={chartRef} style={{ height, touchAction: "none", overscrollBehavior: "contain", position: "relative" }}>
+        {zoom && zoom < series.length && (
+          <button onClick={() => setZoom(null)}
+            title="Reset zoom"
+            className="absolute top-1 right-1 z-10 flex items-center gap-1 px-2 py-1 text-[10px] rounded-lg bg-[#141C30]/90 border border-white/10 text-gray-300 hover:text-white hover:border-white/20">
+            Reset zoom ({zoom})
+          </button>
+        )}
         {loading ? (
           <div className="flex items-center justify-center h-full">
             <div className="w-6 h-6 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />

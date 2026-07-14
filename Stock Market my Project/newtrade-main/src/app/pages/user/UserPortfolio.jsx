@@ -1062,6 +1062,113 @@ const SECTOR_COLORS = [
   "#EF4444", "#3B82F6", "#EC4899", "#14B8A6",
 ];
 
+// Reusable holdings/positions table card. Used for both DELIVERY holdings and
+// INTRADAY positions (showStatus=true adds an OPEN/CLOSED column).
+function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus = false, emptyText }) {
+  const cols = ["Symbol", "Shares", "Avg Cost", "Current", "Market Value", "P&L", "Return", "Weight"];
+  if (showStatus) cols.push("Status");
+  return (
+    <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
+        <div>
+          <div className="text-sm font-medium text-white">{title}</div>
+          {subtitle && <div className="text-[11px] text-gray-600 mt-0.5">{subtitle}</div>}
+        </div>
+        <div className="px-2.5 py-1 bg-cyan-500/10 border border-cyan-500/15 rounded-full text-xs text-cyan-400">
+          {list.length} position{list.length !== 1 ? "s" : ""}
+        </div>
+      </div>
+
+      {list.length === 0 ? (
+        <div className="py-10 text-center text-gray-600 text-sm">{emptyText || "Nothing here yet"}</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-white/5">
+                {cols.map(h => (
+                  <th key={h} className="px-5 py-3 text-left text-xs text-gray-600 font-medium">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {list.map((h, idx) => {
+                const qty      = parseFloat(h.quantity          || 0);
+                const avgCost  = parseFloat(h.average_buy_price || 0);
+                const currPx   = parseFloat(h.current_price || 0) > 0 ? parseFloat(h.current_price) : avgCost;
+                const mktVal   = parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : qty * currPx;
+                const invested = parseFloat(h.total_invested || qty * avgCost);
+                const pnl      = parseFloat(h.unrealized_pnl || 0) !== 0 ? parseFloat(h.unrealized_pnl) : mktVal - invested;
+                const pnlPct   = parseFloat(h.unrealized_pnl_percent || 0) !== 0
+                  ? parseFloat(h.unrealized_pnl_percent)
+                  : (avgCost > 0 ? ((currPx - avgCost) / avgCost) * 100 : 0);
+                const up       = pnl >= 0;
+                const weight   = totalValue > 0 ? (mktVal / totalValue) * 100 : 0;
+                const ticker   = h.ticker_symbol || "—";
+                const closed   = h.is_active === false || h.position_status === "CLOSED";
+                return (
+                  <motion.tr
+                    key={h.holding_id || idx}
+                    initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: idx * 0.04 }}
+                    onClick={() => ticker !== "—" && navigate(`/user/stock/${ticker}`)}
+                    className={`border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors ${closed ? "opacity-60" : ""}`}
+                  >
+                    <td className="px-5 py-3.5">
+                      <div className="flex items-center gap-2.5">
+                        {h.logo_url ? (
+                          <img src={h.logo_url} alt={ticker} className="w-7 h-7 rounded-xl object-contain bg-white/5" />
+                        ) : (
+                          <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 flex items-center justify-center">
+                            <span className="text-xs font-bold text-cyan-400">{ticker.slice(0, 2)}</span>
+                          </div>
+                        )}
+                        <div>
+                          <div className="text-sm font-bold text-white">{ticker}</div>
+                          <div className="text-xs text-gray-600">{h.sector || "—"}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5 text-sm text-gray-300">{qty.toFixed(4)}</td>
+                    <td className="px-5 py-3.5 text-sm text-gray-300">₹{avgCost.toFixed(2)}</td>
+                    <td className="px-5 py-3.5 text-sm text-white">₹{currPx.toFixed(2)}</td>
+                    <td className="px-5 py-3.5 text-sm text-white">₹{mktVal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</td>
+                    <td className={`px-5 py-3.5 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
+                      {up ? "+" : "-"}₹{Math.abs(pnl).toFixed(2)}
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <div className={`flex items-center gap-1 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
+                        {up ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
+                        {up ? "+" : ""}{pnlPct.toFixed(2)}%
+                      </div>
+                    </td>
+                    <td className="px-5 py-3.5">
+                      <div className="flex items-center gap-2">
+                        <div className="w-16 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                          <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${Math.min(100, weight)}%` }} />
+                        </div>
+                        <span className="text-xs text-gray-500">{weight.toFixed(1)}%</span>
+                      </div>
+                    </td>
+                    {showStatus && (
+                      <td className="px-5 py-3.5">
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${closed
+                          ? "text-gray-400 bg-gray-500/10 border-gray-500/20"
+                          : "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"}`}>
+                          {closed ? "CLOSED" : "OPEN"}
+                        </span>
+                      </td>
+                    )}
+                  </motion.tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function UserPortfolio() {
   const navigate = useNavigate();
 
@@ -1195,7 +1302,8 @@ export function UserPortfolio() {
 
       // 4. Fetch portfolio detail + holdings
       // GET /portfolios/<id> → _portfolio_dict + holdings: [_holding_dict, ...]
-      const detRes  = await fetch(`${API_BASE}/portfolios/${primary.portfolio_id}`, { headers: authHdr() });
+      // include_closed=1 also returns CLOSED intraday positions for the Positions view.
+      const detRes  = await fetch(`${API_BASE}/portfolios/${primary.portfolio_id}?include_closed=1`, { headers: authHdr() });
       const detData = await detRes.json();
 
       if (detData.bool && detData.response) {
@@ -1205,11 +1313,15 @@ export function UserPortfolio() {
         const holdingsList = port.holdings || [];
         setHoldings(holdingsList);
 
+        // Aggregates (sector allocation, synthetic charts) use ACTIVE positions
+        // only — CLOSED intraday positions must not pollute the totals.
+        const activeHoldings = holdingsList.filter(h => h.is_active !== false);
+
         // Build sector allocation
         // Use current_value when > 0, else total_invested (handles stocks with no live price yet)
-        if (holdingsList.length > 0) {
+        if (activeHoldings.length > 0) {
           const sectorMap = {};
-          holdingsList.forEach(h => {
+          activeHoldings.forEach(h => {
             const sec = h.sector || "Other";
             const val = parseFloat(h.current_value || 0) > 0
               ? parseFloat(h.current_value)
@@ -1229,7 +1341,7 @@ export function UserPortfolio() {
         }
 
         // 5. Fetch performance chart + monthly returns
-        await fetchPerformance(primary.portfolio_id, holdingsList);
+        await fetchPerformance(primary.portfolio_id, activeHoldings);
       } else {
         setError("Failed to load portfolio details.");
       }
@@ -1249,6 +1361,12 @@ export function UserPortfolio() {
   //   realized_pnl, unrealized_pnl, day_change, day_change_percent
   const totalValue    = parseFloat(portfolio?.current_value        || 0);
   const totalInvested = parseFloat(portfolio?.total_invested       || 0);
+
+  // Keep Delivery holdings and Intraday positions separate in the UI.
+  // Delivery shows active holdings only; Intraday shows OPEN + CLOSED positions.
+  const deliveryHoldings  = holdings.filter(h => (h.trade_mode || "DELIVERY") === "DELIVERY" && h.is_active !== false);
+  const intradayPositions = holdings.filter(h => h.trade_mode === "INTRADAY");
+  const activePositionCount = holdings.filter(h => h.is_active !== false).length;
   const totalPnl      = parseFloat(portfolio?.total_return         || 0);   // total_return, NOT total_pnl
   const totalPnlPct   = parseFloat(portfolio?.total_return_percent || 0);
   const dayPnl        = parseFloat(portfolio?.day_change           || 0);   // day_change, NOT day_pnl
@@ -1309,7 +1427,7 @@ export function UserPortfolio() {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { l: "Portfolio Value", v: `₹${totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}`,     sub: `${holdings.length} position${holdings.length !== 1 ? "s" : ""}`, up: null },
+          { l: "Portfolio Value", v: `₹${totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}`,     sub: `${activePositionCount} position${activePositionCount !== 1 ? "s" : ""}`, up: null },
           { l: "Total P&L",      v: `${totalPnl >= 0 ? "+" : ""}₹${Math.abs(totalPnl).toFixed(2)}`,          sub: `${totalPnlPct >= 0 ? "+" : ""}${totalPnlPct.toFixed(2)}% all time`, up: totalPnl >= 0 },
           { l: "Today's Change", v: `${dayPnl >= 0 ? "+" : ""}₹${Math.abs(dayPnl).toFixed(2)}`,              sub: `${dayPnlPct >= 0 ? "+" : ""}${dayPnlPct.toFixed(2)}% today`,     up: dayPnl >= 0 },
           { l: "Invested",       v: `₹${totalInvested.toLocaleString("en", { maximumFractionDigits: 2 })}`,   sub: "Total cost basis",                                                up: null },
@@ -1433,124 +1551,36 @@ export function UserPortfolio() {
         </div>
       </div>
 
-      {/* Holdings Table */}
-      <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
-          <div className="text-sm font-medium text-white">My Holdings</div>
-          <div className="flex items-center gap-3">
-            <div className="px-2.5 py-1 bg-cyan-500/10 border border-cyan-500/15 rounded-full text-xs text-cyan-400">
-              {holdings.length} position{holdings.length !== 1 ? "s" : ""}
-            </div>
-            <button
-              onClick={() => navigate("/user/trade")}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-400 hover:bg-emerald-500/20 transition-all"
-            >
-              <Plus className="w-3 h-3" /> Buy Stock
-            </button>
-          </div>
-        </div>
-
-        {holdings.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="text-gray-600 text-sm">No holdings yet</div>
-            <div className="text-gray-700 text-xs">Start trading to build your portfolio</div>
-            <button
-              onClick={() => navigate("/user/market")}
-              className="px-5 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-sm font-medium text-white hover:opacity-90 transition-all"
-            >
-              Browse Stocks
-            </button>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-white/5">
-                  {["Symbol", "Shares", "Avg Cost", "Current", "Market Value", "P&L", "Return", "Weight"].map(h => (
-                    <th key={h} className="px-5 py-3 text-left text-xs text-gray-600 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {holdings.map((h, idx) => {
-                  const qty      = parseFloat(h.quantity           || 0);
-                  // Backend _holding_dict field is average_buy_price
-                  const avgCost  = parseFloat(h.average_buy_price  || 0);
-                  // current_price may be 0 if stock price not set — fall back to avg cost
-                  const currPx   = parseFloat(h.current_price      || 0) > 0
-                    ? parseFloat(h.current_price)
-                    : avgCost;
-                  // current_value may be 0 — compute from qty × currPx as fallback
-                  const mktVal   = parseFloat(h.current_value      || 0) > 0
-                    ? parseFloat(h.current_value)
-                    : qty * currPx;
-                  const invested = parseFloat(h.total_invested      || qty * avgCost);
-                  // unrealized_pnl may be 0 — compute as fallback
-                  const pnl      = parseFloat(h.unrealized_pnl      || 0) !== 0
-                    ? parseFloat(h.unrealized_pnl)
-                    : mktVal - invested;
-                  const pnlPct   = parseFloat(h.unrealized_pnl_percent || 0) !== 0
-                    ? parseFloat(h.unrealized_pnl_percent)
-                    : (avgCost > 0 ? ((currPx - avgCost) / avgCost) * 100 : 0);
-                  const up       = pnl >= 0;
-                  const weight   = totalValue > 0 ? (mktVal / totalValue) * 100 : 0;
-                  const ticker   = h.ticker_symbol || "—";
-
-                  return (
-                    <motion.tr
-                      key={h.holding_id || idx}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      transition={{ delay: idx * 0.04 }}
-                      onClick={() => ticker !== "—" && navigate(`/user/stock/${ticker}`)}
-                      className="border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors"
-                    >
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-2.5">
-                          {h.logo_url ? (
-                            <img src={h.logo_url} alt={ticker} className="w-7 h-7 rounded-xl object-contain bg-white/5" />
-                          ) : (
-                            <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 flex items-center justify-center">
-                              <span className="text-xs font-bold text-cyan-400">{ticker.slice(0, 2)}</span>
-                            </div>
-                          )}
-                          <div>
-                            <div className="text-sm font-bold text-white">{ticker}</div>
-                            <div className="text-xs text-gray-600">{h.sector || "—"}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-5 py-3.5 text-sm text-gray-300">{qty.toFixed(4)}</td>
-                      <td className="px-5 py-3.5 text-sm text-gray-300">₹{avgCost.toFixed(2)}</td>
-                      <td className="px-5 py-3.5 text-sm text-white">₹{currPx.toFixed(2)}</td>
-                      <td className="px-5 py-3.5 text-sm text-white">
-                        ₹{mktVal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
-                      </td>
-                      <td className={`px-5 py-3.5 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
-                        {up ? "+" : "-"}₹{Math.abs(pnl).toFixed(2)}
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <div className={`flex items-center gap-1 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
-                          {up ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-                          {up ? "+" : ""}{pnlPct.toFixed(2)}%
-                        </div>
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-2">
-                          <div className="w-16 h-1.5 bg-white/5 rounded-full overflow-hidden">
-                            <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${Math.min(100, weight)}%` }} />
-                          </div>
-                          <span className="text-xs text-gray-500">{weight.toFixed(1)}%</span>
-                        </div>
-                      </td>
-                    </motion.tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+      {/* Delivery Holdings + Intraday Positions (kept separate) */}
+      <div className="flex items-center justify-end">
+        <button
+          onClick={() => navigate("/user/trade")}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-xs text-emerald-400 hover:bg-emerald-500/20 transition-all"
+        >
+          <Plus className="w-3 h-3" /> Buy Stock
+        </button>
       </div>
+
+      <HoldingsCard
+        title="Delivery Holdings"
+        subtitle="Shares held in your portfolio until sold"
+        list={deliveryHoldings}
+        totalValue={totalValue}
+        navigate={navigate}
+        emptyText="No delivery holdings yet — buy a stock in Delivery mode to get started."
+      />
+
+      {intradayPositions.length > 0 && (
+        <HoldingsCard
+          title="Intraday Positions"
+          subtitle="Open and closed intraday trades"
+          list={intradayPositions}
+          totalValue={totalValue}
+          navigate={navigate}
+          showStatus
+          emptyText="No intraday positions."
+        />
+      )}
     </div>
   );
 }

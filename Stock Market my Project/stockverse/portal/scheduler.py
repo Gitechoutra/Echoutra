@@ -1,119 +1,114 @@
 """
 StockMarket Background Scheduler
-Uses APScheduler to run periodic tasks:
-  - Every 5 minutes  : Refresh portfolio current_value and profit_loss for all holdings
-  - Every 15 minutes : (Hook) Fetch latest stock prices from external feed (stub)
+================================
+A dependency-free background worker (plain `threading`) that drives the live
+order engine. It runs two periodic tasks inside the Flask app context:
+
+  - Every 10 seconds : Refresh live prices for stocks with queued orders, then
+                       auto-execute any LIMIT/STOP order whose trigger price is met.
+  - Every 5 minutes  : Refresh every portfolio's current_value and P&L.
+
+A plain daemon thread is used (instead of APScheduler) so the monitor has no
+external dependencies and always runs wherever the app runs.
 """
 import logging
-
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
+import threading
 
 logger = logging.getLogger('stockmarket')
 
-_scheduler = None
+MONITOR_INTERVAL_SECONDS = 10
+PNL_REFRESH_EVERY_TICKS  = 30          # 30 * 10s = every 5 minutes
+
+_worker  = None
+_started = False
 
 
 def init_scheduler(app):
-    """Initialize and start the APScheduler with the Flask app context."""
-    global _scheduler
+    """Start the background monitor thread once. Safe to call repeatedly."""
+    global _worker, _started
+    if _started:
+        return _worker
 
-    if _scheduler and _scheduler.running:
-        return _scheduler
-
-    _scheduler = BackgroundScheduler(
-        job_defaults={'coalesce': True, 'max_instances': 1},
-        timezone='UTC'
+    _started = True
+    _worker  = threading.Thread(
+        target=_run_loop, args=(app,), name='order-monitor', daemon=True
     )
+    _worker.start()
+    logger.info(f'Order monitor thread started (every {MONITOR_INTERVAL_SECONDS}s).')
+    return _worker
 
-    # ── Job 1: Refresh portfolio P&L (every 5 minutes) ───────────────────────
-    _scheduler.add_job(
-        func=lambda: _run_in_context(app, _refresh_portfolio_pnl),
-        trigger=IntervalTrigger(minutes=5),
-        id='refresh_portfolio_pnl',
-        name='Refresh portfolio current value and P&L',
-        replace_existing=True,
-    )
 
-    # ── Job 2: Stock price feed hook (every 15 minutes) ──────────────────────
-    _scheduler.add_job(
-        func=lambda: _run_in_context(app, _refresh_stock_prices),
-        trigger=IntervalTrigger(minutes=15),
-        id='refresh_stock_prices',
-        name='Refresh stock current prices from external feed',
-        replace_existing=True,
-    )
-
-    _scheduler.start()
-    logger.info('APScheduler started with jobs: refresh_portfolio_pnl, refresh_stock_prices')
-    return _scheduler
+def _run_loop(app):
+    """Tick forever: monitor orders every interval, refresh P&L every 5 minutes."""
+    tick = 0
+    stop = threading.Event()
+    while not stop.wait(MONITOR_INTERVAL_SECONDS):
+        tick += 1
+        _run_in_context(app, _monitor_orders)
+        if tick % PNL_REFRESH_EVERY_TICKS == 0:
+            _run_in_context(app, _refresh_portfolio_pnl)
 
 
 def _run_in_context(app, func):
-    """Run a job function inside the Flask app context."""
+    """Run a job inside a fresh Flask app context, isolating failures."""
     with app.app_context():
         try:
             func()
         except Exception as e:
             logger.error(f'Scheduler job error in {func.__name__}: {e}', exc_info=True)
+        finally:
+            from portal import db
+            db.session.remove()   # release the thread-local session each tick
+
+
+def _monitor_orders():
+    """
+    The live-order engine tick:
+      1. Refresh live prices for exactly the stocks that have live queued orders
+         (keeps Upstox usage minimal even at a 10-second cadence).
+      2. Run the matching engine, which fills any order whose trigger price is met
+         and updates the wallet, holdings, ledgers and portfolio.
+    """
+    from portal import db
+    from portal.models.trade_orders import TradeOrders
+    from portal.models.stocks import Stocks
+    from portal.helpers.order_engine import process_pending_orders, _OPEN_STATUSES, _QUEUED_TYPES
+
+    rows = (db.session.query(TradeOrders.stock_id)
+            .filter(TradeOrders.order_status.in_(_OPEN_STATUSES),
+                    TradeOrders.order_type.in_(_QUEUED_TYPES))
+            .distinct().all())
+    stock_ids = [r[0] for r in rows]
+    if not stock_ids:
+        return   # nothing pending — skip the API call entirely
+
+    # 1) Pull fresh live prices for just those stocks.
+    try:
+        from portal.helpers.market_data import is_configured, refresh_stocks
+        if is_configured():
+            stocks  = Stocks.query.filter(Stocks.stock_id.in_(stock_ids)).all()
+            summary = refresh_stocks(stocks)
+            db.session.commit()
+            if summary.get('updated'):
+                logger.debug(f'[scheduler] refreshed {summary["updated"]} price(s) for pending orders')
+    except Exception as e:
+        db.session.rollback()
+        logger.warning(f'[scheduler] live price refresh failed (non-fatal): {e}')
+
+    # 2) Match + execute against the latest prices.
+    process_pending_orders()
 
 
 def _refresh_portfolio_pnl():
-    """
-    Recalculate current_value and profit_loss for every portfolio holding
-    using the stock's latest current_price.
-    Runs every 5 minutes to keep P&L fresh during market hours.
-    """
-    from portal.models.portfolio import Portfolio
-    from portal.models import db
+    """Recompute current_value and P&L for every active portfolio from the
+    latest stock prices, via the shared engine revalue routine."""
+    from portal.models.portfolios import Portfolios
+    from portal.helpers.order_engine import revalue_portfolio
 
-    holdings = Portfolio.query.all()
-    updated  = 0
-
-    for p in holdings:
-        stock = p.stock
-        if not stock or not stock.current_price:
-            continue
-
-        new_current_value = round(stock.current_price * p.quantity, 2)
-        new_profit_loss   = round(new_current_value - (p.average_buy_price * p.quantity), 2)
-
-        if p.current_value != new_current_value or p.profit_loss != new_profit_loss:
-            p.current_value = new_current_value
-            p.profit_loss   = new_profit_loss
-            updated += 1
-
-    if updated:
-        db.session.commit()
-        logger.info(f'Portfolio P&L refresh: updated {updated} holding(s).')
-    else:
-        logger.debug('Portfolio P&L refresh: no changes detected.')
-
-
-def _refresh_stock_prices():
-    """
-    Stub for fetching live stock prices from an external market data API
-    (e.g. Alpha Vantage, Yahoo Finance, NSE/BSE API).
-    Replace the body of this function with your actual price-feed integration.
-    """
-    # TODO: Integrate with a real market data provider.
-    # Example flow:
-    #   1. Fetch latest prices for all ACTIVE stocks
-    #   2. Update Stocks.current_price
-    #   3. Insert a StockPriceHistory record for today's OHLCV
-    logger.debug('Stock price refresh: stub — no external feed configured yet.')
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    portfolios = Portfolios.query.filter_by(is_active=True).all()
+    for p in portfolios:
+        try:
+            revalue_portfolio(p)
+        except Exception as e:
+            logger.error(f'[scheduler] revalue failed for portfolio {p.portfolio_id}: {e}')
+    logger.debug(f'[scheduler] portfolio P&L refresh: {len(portfolios)} portfolio(s).')
