@@ -161,6 +161,13 @@ export function UserLayout() {
     } catch {}
   }, []);
 
+  /* Refresh the profile (and its plan badge) when the plan changes elsewhere. */
+  useEffect(() => {
+    const onSubChange = () => fetchUserProfile();
+    window.addEventListener("subscription-changed", onSubChange);
+    return () => window.removeEventListener("subscription-changed", onSubChange);
+  }, [fetchUserProfile]);
+
   /* ── Fetch holdings for search enrichment ───────────────────────────── */
   const fetchUserHoldings = useCallback(async () => {
     const token = getToken();

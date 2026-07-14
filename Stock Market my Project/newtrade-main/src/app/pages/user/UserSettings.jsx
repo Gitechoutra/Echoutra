@@ -27,7 +27,7 @@ const tabs = [
   { id: "profile",  label: "Profile",          icon: User },
   { id: "notifs",   label: "Notifications",    icon: Bell },
   { id: "security", label: "Security",         icon: Shield },
-  { id: "billing",  label: "Billing",          icon: CreditCard },
+  { id: "billing",  label: "Plans",            icon: CreditCard },
   { id: "wallet",   label: "Wallet",           icon: Wallet },
   { id: "kyc",      label: "KYC Verification", icon: Shield },
 ];
@@ -126,6 +126,7 @@ export function UserSettings() {
   const [plans,          setPlans]          = useState([]);
   const [mySub,          setMySub]          = useState(null);
   const [billingHistory, setBillingHistory] = useState([]);
+  const [billingCycle,   setBillingCycle]   = useState("MONTHLY");   // MONTHLY | QUARTERLY | HALFYEARLY
 
   /* ── KYC ─────────────────────────────────────────────────────────────────── */
   const [kycData,       setKycData]       = useState(null);
@@ -410,10 +411,14 @@ export function UserSettings() {
   const handleSubscribe = async (planId) => {
     const res  = await fetch(`${API_BASE}/subscriptions/subscribe`, {
       method: "POST", headers: jsonHdr(),
-      body: JSON.stringify({ plan_id: planId, billing_cycle: "MONTHLY" }),
+      body: JSON.stringify({ plan_id: planId, billing_cycle: billingCycle }),
     });
     const data = await res.json();
-    if (data.bool) { await fetchSubscription(); showToast("Subscribed successfully!"); }
+    if (data.bool) {
+      await fetchSubscription();
+      window.dispatchEvent(new Event("subscription-changed"));   // refresh profile plan badge
+      showToast("Subscribed successfully!");
+    }
     else showToast(data.response?.message || "Subscription failed.", false);
   };
 
@@ -421,7 +426,11 @@ export function UserSettings() {
     if (!window.confirm("Cancel subscription?")) return;
     const res  = await fetch(`${API_BASE}/subscriptions/cancel`, { method: "POST", headers: authHdr() });
     const data = await res.json();
-    if (data.bool) { await fetchSubscription(); showToast("Subscription cancelled."); }
+    if (data.bool) {
+      await fetchSubscription();
+      window.dispatchEvent(new Event("subscription-changed"));
+      showToast("Subscription cancelled.");
+    }
   };
 
   /* ── KYC submit ────────────────────────────────────────────────────────── */
@@ -937,7 +946,7 @@ export function UserSettings() {
                       <div>
                         <div className="text-xs text-gray-500">Active Plan Tier</div>
                         <div className="text-2xl font-bold text-white">{mySub?.plan?.plan_name || mySub?.plan_name || "Free"} Plan</div>
-                        <div className="text-sm text-cyan-400 mt-1">{mySub?.amount_paid ? `₹${mySub.amount_paid}/month` : "Free tier"}</div>
+                        <div className="text-sm text-cyan-400 mt-1">{mySub?.amount_paid ? `₹${mySub.amount_paid} · ${({MONTHLY:"1 month",QUARTERLY:"3 months",HALFYEARLY:"6 months",ANNUALLY:"12 months"}[mySub.billing_cycle] || mySub.billing_cycle || "billed")}` : "Free tier"}</div>
                       </div>
                       <span className="px-3 py-1.5 bg-cyan-500/15 border border-cyan-500/25 rounded-xl text-sm text-cyan-400">{mySub?.status || "Active"}</span>
                     </div>
@@ -946,22 +955,65 @@ export function UserSettings() {
                     )}
                   </div>
                   <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-5">
-                    <div className="text-sm font-medium text-white mb-4">Available Plans</div>
-                    <div className="grid md:grid-cols-2 gap-4">
-                      {plans.map((p) => (
-                        <div key={p.plan_id || p.id} className={`p-4 rounded-xl border flex flex-col justify-between gap-3 ${mySub?.plan_id === (p.plan_id || p.id) ? "border-cyan-500/30 bg-cyan-500/5" : "border-white/5 bg-[#141C30]"}`}>
-                          <div>
-                            <div className="text-sm font-bold text-white">{p.plan_name || p.name}</div>
-                            <div className="text-cyan-400 font-bold text-lg mt-1">₹{p.price_monthly || p.price}/mo</div>
-                            <p className="text-xs text-gray-500 mt-1">{p.description || p.tagline}</p>
-                          </div>
-                          <button onClick={() => handleSubscribe(p.plan_id || p.id)} disabled={mySub?.plan_id === (p.plan_id || p.id)}
-                            className={`w-full py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all ${mySub?.plan_id === (p.plan_id || p.id) ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/25" : "bg-gradient-to-r from-cyan-500 to-blue-600 text-white"}`}>
-                            {mySub?.plan_id === (p.plan_id || p.id) ? "Current Plan" : "Choose Plan"}
+                    <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
+                      <div className="text-sm font-medium text-white">Available Upgrades</div>
+                      {/* Billing period selector: 1 / 3 / 6 months */}
+                      <div className="flex gap-1 bg-[#141C30] border border-white/8 rounded-xl p-1">
+                        {[
+                          { key: "MONTHLY",    label: "1 Month",  field: "price_monthly"   },
+                          { key: "QUARTERLY",  label: "3 Months", field: "price_quarterly" },
+                          { key: "HALFYEARLY", label: "6 Months", field: "price_halfyearly"},
+                        ].map((c) => (
+                          <button key={c.key} onClick={() => setBillingCycle(c.key)}
+                            className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${billingCycle === c.key ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/25" : "text-gray-500 hover:text-gray-300"}`}>
+                            {c.label}
                           </button>
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
+                    {(() => {
+                      // Only show plans ABOVE the current tier (upgrades). On the
+                      // highest plan, there's nothing left to upgrade to.
+                      const currentOrder = mySub?.plan?.sort_order
+                        ?? (plans.find((p) => (p.plan_tier || "").toUpperCase() === "FREE")?.sort_order ?? 0);
+                      const upgradePlans = plans.filter((p) => (p.sort_order ?? 0) > currentOrder);
+                      if (upgradePlans.length === 0) {
+                        return (
+                          <div className="py-8 text-center text-sm text-gray-500">
+                            You're on our highest plan — nothing left to upgrade. 🎉
+                          </div>
+                        );
+                      }
+                      const cycleMeta = {
+                        MONTHLY:    { field: "price_monthly",    label: "month",    months: 1 },
+                        QUARTERLY:  { field: "price_quarterly",  label: "3 months", months: 3 },
+                        HALFYEARLY: { field: "price_halfyearly", label: "6 months", months: 6 },
+                      }[billingCycle];
+                      return (
+                        <div className="grid md:grid-cols-2 gap-4">
+                          {upgradePlans.map((p) => {
+                            const price   = Number(p[cycleMeta.field] ?? p.price_monthly ?? 0);
+                            const perMonth = cycleMeta.months > 1 ? price / cycleMeta.months : null;
+                            return (
+                              <div key={p.plan_id || p.id} className="p-4 rounded-xl border border-white/5 bg-[#141C30] flex flex-col justify-between gap-3">
+                                <div>
+                                  <div className="text-sm font-bold text-white">{p.plan_name || p.name}</div>
+                                  <div className="text-cyan-400 font-bold text-lg mt-1">₹{price.toLocaleString("en-IN")}<span className="text-xs text-gray-500 font-normal"> / {cycleMeta.label}</span></div>
+                                  {perMonth != null && (
+                                    <div className="text-[11px] text-gray-600">≈ ₹{perMonth.toFixed(0)}/mo</div>
+                                  )}
+                                  <p className="text-xs text-gray-500 mt-1">{p.description || p.tagline}</p>
+                                </div>
+                                <button onClick={() => handleSubscribe(p.plan_id || p.id)}
+                                  className="w-full py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all bg-gradient-to-r from-cyan-500 to-blue-600 text-white">
+                                  Choose Plan
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
                     <div className="px-5 py-4 border-b border-white/5 text-sm font-medium text-white">Billing History</div>

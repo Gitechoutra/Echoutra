@@ -4,7 +4,7 @@ import { motion } from "motion/react";
 import {
   TrendingUp, TrendingDown, ArrowUpRight, Plus,
   ChevronRight, DollarSign, Wallet, PieChart as PieIcon,
-  RefreshCw, AlertCircle,
+  RefreshCw, AlertCircle, Briefcase,
 } from "lucide-react";
 import {
   AreaChart, Area, ResponsiveContainer, Tooltip,
@@ -179,8 +179,20 @@ export function UserDashboard() {
   const totalReturn = parseFloat(portfolio?.total_return            || summary?.portfolio?.total_return            || 0);
   const totalRetPct = parseFloat(portfolio?.total_return_percent    || summary?.portfolio?.total_return_percent    || 0);
   const cashBalance = parseFloat(wallet?.available_balance          || summary?.wallet?.available_balance          || 0);
-  const todayPnl    = parseFloat(portfolio?.day_change              || summary?.portfolio?.day_change              || 0);
-  const todayPnlPct = parseFloat(portfolio?.day_change_percent      || summary?.portfolio?.day_change_percent      || 0);
+  // Today's P&L = Σ (current_price − previous_close) × qty across holdings.
+  // This is live (moves with prices) and resets every IST day when the backend
+  // rolls previous_close forward. Falls back to the stored portfolio.day_change.
+  let dayPnlCalc = 0, prevDayValue = 0;
+  holdings.forEach((h) => {
+    const cp = parseFloat(h.current_price || 0);
+    const pc = parseFloat(h.previous_close || 0);
+    const q  = parseFloat(h.quantity || 0);
+    if (q > 0 && cp > 0 && pc > 0) { dayPnlCalc += (cp - pc) * q; prevDayValue += pc * q; }
+  });
+  const backendDay = parseFloat(portfolio?.day_change ?? summary?.portfolio?.day_change ?? 0);
+  const todayPnl    = (holdings.length && prevDayValue > 0) ? dayPnlCalc : backendDay;
+  const todayPnlPct = prevDayValue > 0 ? (dayPnlCalc / prevDayValue) * 100
+                    : parseFloat(portfolio?.day_change_percent ?? summary?.portfolio?.day_change_percent ?? 0);
   const openPositions = holdings.length;
   const profitCount   = holdings.filter((h) => parseFloat(h.unrealized_pnl || 0) >= 0).length;
   const up            = totalReturn >= 0;
@@ -257,7 +269,7 @@ export function UserDashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {[
           {
             label: "Portfolio Value",
@@ -287,13 +299,22 @@ export function UserDashboard() {
             icon:  PieIcon, up: null,
             color: "from-violet-500/15 to-violet-500/5", border: "border-violet-500/15", ic: "text-violet-400",
           },
+          {
+            label: "Holdings",
+            value: openPositions.toString(),
+            sub:   "View all →",
+            icon:  Briefcase, up: null,
+            color: "from-amber-500/15 to-amber-500/5", border: "border-amber-500/15", ic: "text-amber-400",
+            onClick: () => navigate("/user/portfolio"),
+          },
         ].map((s, i) => (
           <motion.div
             key={i}
             initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.08 }}
-            className={`bg-gradient-to-br ${s.color} border ${s.border} rounded-2xl p-4`}
+            onClick={s.onClick}
+            className={`bg-gradient-to-br ${s.color} border ${s.border} rounded-2xl p-4 ${s.onClick ? "cursor-pointer hover:brightness-125 transition-all" : ""}`}
           >
             <div className="flex items-center justify-between mb-3">
               <span className="text-xs text-gray-500">{s.label}</span>

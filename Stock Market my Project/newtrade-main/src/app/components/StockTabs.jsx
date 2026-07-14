@@ -23,11 +23,14 @@ const ALL_TABS = [
   { key: "Positions", icon: Briefcase },
 ];
 
-// Deterministic-ish 5-level order book synthesised around the live price.
+// 5-level order book synthesised around the live price. Re-run on a timer to
+// simulate a live L2 feed — the mid price wobbles slightly and quantities churn
+// each tick, so the values visibly change over time.
 function buildDepth(ltp) {
-  const p = Number(ltp) || 100;
-  const tick = Math.max(0.05, +(p * 0.0004).toFixed(2));
-  const q = (base) => Math.round(base * (0.6 + Math.random() * 1.8));
+  const base = Number(ltp) || 100;
+  const p    = base * (1 + (Math.random() - 0.5) * 0.0012);   // tiny live price wobble
+  const tick = Math.max(0.05, +(base * 0.0004).toFixed(2));
+  const q    = (b) => Math.round(b * (0.6 + Math.random() * 1.8));
   const bids = [], asks = [];
   for (let i = 0; i < 5; i++) {
     bids.push({ price: +(p - tick * (i + 1)).toFixed(2), qty: q(2500 - i * 200) });
@@ -67,7 +70,15 @@ export function StockTabs({ stock, myHolding, symbol, stockId, tabs, accent = "c
   const ltp       = num(stock?.current_price);
   const prevClose = num(stock?.previous_close);
 
-  const depth = useMemo(() => buildDepth(ltp), [ltp]);
+  // Tick every 1.5s while the Depth tab is open so the order book updates live.
+  const [depthTick, setDepthTick] = useState(0);
+  useEffect(() => {
+    if (tab !== "Depth") return;
+    const id = setInterval(() => setDepthTick((t) => t + 1), 1500);
+    return () => clearInterval(id);
+  }, [tab]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const depth = useMemo(() => buildDepth(ltp), [ltp, depthTick]);
 
   const [cancellingId, setCancellingId] = useState(null);
 
@@ -108,7 +119,7 @@ export function StockTabs({ stock, myHolding, symbol, stockId, tabs, accent = "c
 
   // ── Stats rows ──────────────────────────────────────────────────────────────
   const statRows = [
-    ["Open",        stock?.open_price      != null ? inr(stock.open_price) : "—"],
+    ["Open",        (stock?.open_price ?? stock?.previous_close) != null ? inr(stock?.open_price ?? stock?.previous_close) : "—"],
     ["High",        stock?.day_high        != null ? inr(stock.day_high)   : "—"],
     ["Low",         stock?.day_low         != null ? inr(stock.day_low)    : "—"],
     ["Prev. close", prevClose              != null ? inr(prevClose)        : "—"],

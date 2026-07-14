@@ -7,17 +7,19 @@ class PlanTier:
     BASIC      = "BASIC"
     PRO        = "PRO"
     PREMIUM    = "PREMIUM"
+    ELITE      = "ELITE"
     ENTERPRISE = "ENTERPRISE"
 
-    CHOICES = [FREE, BASIC, PRO, PREMIUM, ENTERPRISE]
+    CHOICES = [FREE, BASIC, PRO, PREMIUM, ELITE, ENTERPRISE]
 
 
 class BillingCycle:
-    MONTHLY   = "MONTHLY"
-    QUARTERLY = "QUARTERLY"
-    ANNUALLY  = "ANNUALLY"
+    MONTHLY    = "MONTHLY"      # 1 month
+    QUARTERLY  = "QUARTERLY"    # 3 months
+    HALFYEARLY = "HALFYEARLY"   # 6 months
+    ANNUALLY   = "ANNUALLY"     # 12 months (legacy)
 
-    CHOICES = [MONTHLY, QUARTERLY, ANNUALLY]
+    CHOICES = [MONTHLY, QUARTERLY, HALFYEARLY, ANNUALLY]
 
 
 class SubscriptionPlans(db.Model):
@@ -29,10 +31,11 @@ class SubscriptionPlans(db.Model):
     description = db.Column(db.Text, nullable=True)
     tagline     = db.Column(db.String(200), nullable=True)
 
-    # Pricing
-    price_monthly   = db.Column(db.Numeric(10, 2), default=0.00)
-    price_quarterly = db.Column(db.Numeric(10, 2), default=0.00)
-    price_annually  = db.Column(db.Numeric(10, 2), default=0.00)
+    # Pricing (per billing period)
+    price_monthly    = db.Column(db.Numeric(10, 2), default=0.00)   # 1 month
+    price_quarterly  = db.Column(db.Numeric(10, 2), default=0.00)   # 3 months
+    price_halfyearly = db.Column(db.Numeric(10, 2), default=0.00)   # 6 months
+    price_annually   = db.Column(db.Numeric(10, 2), default=0.00)   # 12 months (legacy)
     # FIX: Default changed from 'USD' to 'INR' — subscription pricing is in Indian Rupees
     # (e.g. ₹1,599/mo for Pro, ₹3,999/mo for Elite as shown in the SignUpPage).
     currency = db.Column(db.String(5), default='INR')

@@ -73,6 +73,7 @@ def _holding_dict(h: PortfolioHoldings) -> dict:
         'average_buy_price':      float(h.average_buy_price),
         'total_invested':         float(h.total_invested),
         'current_price':          float(h.current_price)  if h.current_price  else None,
+        'previous_close':         float(h.stock.previous_close) if h.stock and h.stock.previous_close else None,
         'current_value':          float(h.current_value)  if h.current_value  else None,
         'unrealized_pnl':         float(h.unrealized_pnl) if h.unrealized_pnl else None,
         'unrealized_pnl_percent': float(h.unrealized_pnl_percent) if h.unrealized_pnl_percent else None,

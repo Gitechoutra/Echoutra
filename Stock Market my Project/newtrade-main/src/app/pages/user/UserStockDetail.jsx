@@ -48,6 +48,7 @@ export function UserStockDetail() {
 
   // trade panel
   const [tradeType,    setT]            = useState("buy");
+  const [exchange,     setExchange]     = useState("NSE");        // NSE | BSE
   const [tradeMode,    setTradeMode]    = useState("delivery");   // delivery | intraday
   const [orderType,    setOT]           = useState("market");
   const [qty,          setQty]          = useState("0");
@@ -202,6 +203,7 @@ export function UserStockDetail() {
         order_side:     tradeType.toUpperCase(),
         order_type:     orderType.toUpperCase(),
         trade_mode:     tradeMode.toUpperCase(),   // DELIVERY | INTRADAY
+        exchange:       exchange,                  // NSE | BSE
         quantity:       quantity,
         order_duration: "DAY",
       };
@@ -245,6 +247,8 @@ export function UserStockDetail() {
       setLoading(true); setError("");
       const stockObj = await fetchStockDetails();
       if (stockObj) {
+        // Default the exchange selector to the stock's primary listing.
+        setExchange((stockObj.exchange || "NSE").toUpperCase() === "BSE" ? "BSE" : "NSE");
         await Promise.allSettled([
           fetchUserHoldings(stockObj),
           fetchWatchlistStatus(stockObj),
@@ -259,7 +263,20 @@ export function UserStockDetail() {
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const up     = (stock?.price_change_percent || 0) >= 0;
-  const execPx = orderType==="market" ? (stock?.current_price||0) : (parseFloat(limitPx)||stock?.current_price||0);
+
+  // NSE / BSE prices. We store one live price for the stock's primary exchange;
+  // the other exchange is shown with a small realistic spread. The selected
+  // exchange drives the market-price reference used for the order.
+  const basePx    = parseFloat(stock?.current_price || 0);
+  const primaryEx = (stock?.exchange || "NSE").toUpperCase() === "BSE" ? "BSE" : "NSE";
+  const SPREAD    = 0.0004;   // ~0.04% NSE/BSE spread
+  const exPrices  = {
+    NSE: primaryEx === "NSE" ? basePx : +(basePx * (1 + SPREAD)).toFixed(2),
+    BSE: primaryEx === "BSE" ? basePx : +(basePx * (1 - SPREAD)).toFixed(2),
+  };
+  const marketPx  = exPrices[exchange] || basePx;
+
+  const execPx = orderType==="market" ? marketPx : (parseFloat(limitPx)||marketPx);
   const total  = (parseFloat(qty)||0)*execPx;
 
   // ── Early returns ─────────────────────────────────────────────────────────
@@ -330,7 +347,7 @@ export function UserStockDetail() {
                     <span className="text-sm">({up?"+":""}{parseFloat(stock.price_change_percent||0).toFixed(2)}%)</span>
                   </div>
                 </div>
-                <div className="text-xs text-gray-600 mt-1">{stock.exchange||"NASDAQ"} · Real-time</div>
+                <div className="text-xs text-gray-600 mt-1">{exchange} · Real-time</div>
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={toggleWatchlist}
@@ -402,6 +419,17 @@ export function UserStockDetail() {
         <div className="space-y-5 self-start lg:sticky lg:top-6 lg:max-h-[calc(100vh-3rem)] lg:overflow-y-auto">
           <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
 
+            {/* Exchange selector — pick NSE / BSE and trade at that quote */}
+            <div className="grid grid-cols-2 gap-2 p-3 border-b border-white/5">
+              {["NSE","BSE"].map(ex=>(
+                <button key={ex} onClick={()=>setExchange(ex)}
+                  className={`flex items-center justify-between px-3 py-2 rounded-xl border transition-all ${exchange===ex?"border-cyan-500/50 bg-cyan-500/10":"border-white/8 bg-[#141C30] hover:border-white/15"}`}>
+                  <span className={`text-xs font-semibold ${exchange===ex?"text-cyan-400":"text-gray-400"}`}>{ex}</span>
+                  <span className={`text-sm font-bold ${exchange===ex?"text-white":"text-gray-500"}`}>₹{(exPrices[ex]||0).toFixed(2)}</span>
+                </button>
+              ))}
+            </div>
+
             <div className="grid grid-cols-2">
               {["buy","sell"].map(t=>(
                 <button key={t} onClick={()=>{setT(t);setPlaceErr("");}}
@@ -467,7 +495,7 @@ export function UserStockDetail() {
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">₹</span>
                     <input type="number" value={limitPx} onChange={e=>setLimitPx(e.target.value)}
-                      placeholder={stock.current_price?.toFixed(2)}
+                      placeholder={marketPx.toFixed(2)}
                       className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30"/>
                   </div>
                 </div>
@@ -475,7 +503,7 @@ export function UserStockDetail() {
 
               {/* Order summary */}
               <div className="bg-[#141C30] rounded-xl p-3 space-y-2">
-                <div className="flex justify-between text-xs"><span className="text-gray-500">Market Price</span><span className="text-white">₹{parseFloat(stock.current_price||0).toFixed(2)}</span></div>
+                <div className="flex justify-between text-xs"><span className="text-gray-500">Market Price ({exchange})</span><span className="text-white">₹{marketPx.toFixed(2)}</span></div>
                 <div className="flex justify-between text-xs"><span className="text-gray-500">Quantity</span><span className="text-white">{qty||0} shares</span></div>
                 <div className="flex justify-between text-xs"><span className="text-gray-500">Commission (~0.1%)</span><span className="text-gray-400">₹{(total*0.001).toFixed(2)}</span></div>
                 <div className="pt-2 border-t border-white/5 flex justify-between text-sm">
@@ -551,7 +579,7 @@ export function UserStockDetail() {
               <div className="bg-[#141C30] rounded-xl p-4 space-y-2.5 mb-5">
                 {[
                   ["Action",     tradeType==="buy"?"Buy":"Sell"],
-                  ["Symbol",     stock.ticker_symbol],
+                  ["Symbol",     `${stock.ticker_symbol} · ${exchange}`],
                   ["Product",    tradeMode.toUpperCase()],
                   ["Order Type", orderType.toUpperCase()],
                   ["Quantity",   `${qty} shares`],

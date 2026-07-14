@@ -32,7 +32,7 @@ admin_upgrade_parser.add_argument('note',          type=str, required=False, loc
 
 
 def _billing_cycle_days(cycle: str) -> int:
-    return {'MONTHLY': 30, 'QUARTERLY': 91, 'ANNUALLY': 365}.get(cycle.upper(), 30)
+    return {'MONTHLY': 30, 'QUARTERLY': 90, 'HALFYEARLY': 180, 'ANNUALLY': 365}.get(cycle.upper(), 30)
 
 
 def _plan_dict(p: SubscriptionPlans) -> dict:
@@ -44,6 +44,7 @@ def _plan_dict(p: SubscriptionPlans) -> dict:
         'tagline':           p.tagline,
         'price_monthly':     float(p.price_monthly),
         'price_quarterly':   float(p.price_quarterly),
+        'price_halfyearly':  float(p.price_halfyearly) if p.price_halfyearly is not None else 0.0,
         'price_annually':    float(p.price_annually),
         'currency':          p.currency,
         'max_watchlist_items': p.max_watchlist_items,
@@ -143,7 +144,12 @@ class Subscribe(Resource):
                 return jsonify(bool=False, status=404, response={'message': 'Plan not found or inactive.'})
 
             billing_cycle = args['billing_cycle'].upper()
-            price_map     = {'MONTHLY': plan.price_monthly, 'QUARTERLY': plan.price_quarterly, 'ANNUALLY': plan.price_annually}
+            price_map     = {
+                'MONTHLY':    plan.price_monthly,
+                'QUARTERLY':  plan.price_quarterly,
+                'HALFYEARLY': plan.price_halfyearly,
+                'ANNUALLY':   plan.price_annually,
+            }
             amount        = price_map.get(billing_cycle, plan.price_monthly)
 
             # Cancel existing active subscription

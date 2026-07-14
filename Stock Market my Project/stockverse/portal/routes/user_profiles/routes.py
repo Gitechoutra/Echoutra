@@ -80,7 +80,18 @@ class MyProfile(Resource):
             profile = UserProfiles.query.filter_by(user_id=user_id).first()
             if not profile:
                 return jsonify(bool=False, status=404, response={'message': 'Profile not found.'})
-            return jsonify(bool=True, status=200, response=_profile_dict(profile))
+            data = _profile_dict(profile)
+            # Attach the user's active subscription plan so the UI (profile menu,
+            # plan badge) reflects the real tier instead of defaulting to Free.
+            from portal.models.user_subscriptions import UserSubscriptions, SubscriptionStatus
+            sub = (UserSubscriptions.query
+                   .filter_by(user_id=user_id, status=SubscriptionStatus.ACTIVE)
+                   .order_by(UserSubscriptions.created_on.desc())
+                   .first())
+            data['subscription_plan']       = sub.plan.plan_name if sub and sub.plan else 'Free'
+            data['subscription_plan_id']    = sub.plan_id        if sub            else None
+            data['subscription_sort_order'] = (sub.plan.sort_order if sub and sub.plan else 0)
+            return jsonify(bool=True, status=200, response=data)
 
         except Exception as e:
             traceback.print_exc()

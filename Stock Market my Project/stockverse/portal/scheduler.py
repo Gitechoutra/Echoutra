@@ -39,7 +39,8 @@ def init_scheduler(app):
 
 
 def _run_loop(app):
-    """Tick forever: monitor orders every interval, refresh P&L every 5 minutes."""
+    """Tick forever: monitor orders every interval, refresh P&L every 5 minutes,
+    and roll 'today's P&L' over at each new IST day."""
     tick = 0
     stop = threading.Event()
     while not stop.wait(MONITOR_INTERVAL_SECONDS):

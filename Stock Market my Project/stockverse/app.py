@@ -22,8 +22,9 @@ def _ensure_schema():
 
     # (table, column, DDL type + default) — additive, backward-compatible.
     additions = [
-        ('trade_orders',       'trade_mode', "VARCHAR(10) DEFAULT 'DELIVERY'"),
-        ('portfolio_holdings', 'trade_mode', "VARCHAR(10) DEFAULT 'DELIVERY'"),
+        ('trade_orders',       'trade_mode',       "VARCHAR(10) DEFAULT 'DELIVERY'"),
+        ('portfolio_holdings', 'trade_mode',       "VARCHAR(10) DEFAULT 'DELIVERY'"),
+        ('subscription_plans', 'price_halfyearly', "DECIMAL(10,2) DEFAULT 0.00"),
     ]
     db_name = db.session.execute(text("SELECT DATABASE()")).scalar()
     for table, column, ddl in additions:

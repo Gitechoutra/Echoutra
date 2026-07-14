@@ -69,6 +69,7 @@ def _stock_dict(s: Stocks, include_position=False, user_id=None) -> dict:
         'asset_type':         s.asset_type,
         'currency':           s.currency,
         'current_price':      float(s.current_price) if s.current_price else None,
+        'open_price':         float(s.open_price) if s.open_price else None,
         'previous_close':     float(s.previous_close) if s.previous_close else None,
         'price_change':       float(s.price_change) if s.price_change else None,
         'price_change_percent': float(s.price_change_percent) if s.price_change_percent else None,

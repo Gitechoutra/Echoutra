@@ -284,18 +284,26 @@ def revalue_portfolio(portfolio: Portfolios):
     ).all()
     port_value    = Decimal('0')
     port_invested = Decimal('0')
+    port_day_pnl  = Decimal('0')   # today's P&L = Σ (current_price − previous_close) × qty
+    port_prev_val = Decimal('0')   # yesterday's value of the same holdings
     for h in holdings:
         stock = Stocks.query.get(h.stock_id)
         px    = _d(stock.current_price) if stock else Decimal('0')
+        prev  = _d(stock.previous_close) if stock and stock.previous_close else px
         qty   = _d(h.quantity)
         inv   = _d(h.total_invested)
         val   = qty * px
+        day   = (px - prev) * qty
         h.current_price          = px
         h.current_value          = val
         h.unrealized_pnl         = val - inv
         h.unrealized_pnl_percent = ((val - inv) / inv * 100) if inv > 0 else Decimal('0')
+        h.day_change             = day
+        h.day_change_percent     = ((px - prev) / prev * 100) if prev > 0 else Decimal('0')
         port_value    += val
         port_invested += inv
+        port_day_pnl  += day
+        port_prev_val += qty * prev
     for h in holdings:
         h.allocation_percent = ((_d(h.current_value) / port_value) * 100) if port_value > 0 else Decimal('0')
 
@@ -304,6 +312,8 @@ def revalue_portfolio(portfolio: Portfolios):
     portfolio.unrealized_pnl       = port_value - port_invested
     portfolio.total_return         = port_value - port_invested
     portfolio.total_return_percent = ((port_value - port_invested) / port_invested * 100) if port_invested > 0 else Decimal('0')
+    portfolio.day_change           = port_day_pnl
+    portfolio.day_change_percent   = (port_day_pnl / port_prev_val * 100) if port_prev_val > 0 else Decimal('0')
     portfolio.total_holdings_count = len(holdings)
     portfolio.update()
 
