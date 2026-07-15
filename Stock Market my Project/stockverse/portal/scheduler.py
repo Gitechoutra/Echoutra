@@ -13,14 +13,31 @@ external dependencies and always runs wherever the app runs.
 """
 import logging
 import threading
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger('stockmarket')
 
 MONITOR_INTERVAL_SECONDS = 10
 PNL_REFRESH_EVERY_TICKS  = 30          # 30 * 10s = every 5 minutes
 
+# NSE trading session, in IST (UTC+5:30). The full-market live refresh only runs
+# inside these hours so we don't burn Upstox calls while the market is closed.
+IST                = timezone(timedelta(hours=5, minutes=30))
+MARKET_OPEN_HHMM   = (9, 15)
+MARKET_CLOSE_HHMM  = (15, 30)
+
 _worker  = None
 _started = False
+
+
+def _market_is_open(now=None):
+    """True during NSE regular trading hours (Mon–Fri, 09:15–15:30 IST)."""
+    now = now or datetime.now(IST)
+    if now.weekday() >= 5:                      # 5 = Sat, 6 = Sun
+        return False
+    open_t  = now.replace(hour=MARKET_OPEN_HHMM[0],  minute=MARKET_OPEN_HHMM[1],  second=0, microsecond=0)
+    close_t = now.replace(hour=MARKET_CLOSE_HHMM[0], minute=MARKET_CLOSE_HHMM[1], second=0, microsecond=0)
+    return open_t <= now <= close_t
 
 
 def init_scheduler(app):
@@ -65,33 +82,43 @@ def _run_in_context(app, func):
 def _monitor_orders():
     """
     The live-order engine tick:
-      1. Refresh live prices for exactly the stocks that have live queued orders
-         (keeps Upstox usage minimal even at a 10-second cadence).
+      1. Refresh live prices:
+           • During market hours  → ALL active stocks, so the whole market stays
+             live in near-real-time (one batched Upstox call per tick).
+           • Outside market hours → only stocks with live queued orders, so we
+             don't waste API calls while the market is closed.
       2. Run the matching engine, which fills any order whose trigger price is met
          and updates the wallet, holdings, ledgers and portfolio.
     """
     from portal import db
     from portal.models.trade_orders import TradeOrders
-    from portal.models.stocks import Stocks
+    from portal.models.stocks import Stocks, StockStatus
     from portal.helpers.order_engine import process_pending_orders, _OPEN_STATUSES, _QUEUED_TYPES
 
-    rows = (db.session.query(TradeOrders.stock_id)
-            .filter(TradeOrders.order_status.in_(_OPEN_STATUSES),
-                    TradeOrders.order_type.in_(_QUEUED_TYPES))
-            .distinct().all())
-    stock_ids = [r[0] for r in rows]
-    if not stock_ids:
-        return   # nothing pending — skip the API call entirely
-
-    # 1) Pull fresh live prices for just those stocks.
+    # 1) Pull fresh live prices.
     try:
         from portal.helpers.market_data import is_configured, refresh_stocks
         if is_configured():
-            stocks  = Stocks.query.filter(Stocks.stock_id.in_(stock_ids)).all()
-            summary = refresh_stocks(stocks)
-            db.session.commit()
-            if summary.get('updated'):
-                logger.debug(f'[scheduler] refreshed {summary["updated"]} price(s) for pending orders')
+            if _market_is_open():
+                # Full-market refresh — keep every active stock live.
+                stocks = Stocks.query.filter_by(status=StockStatus.ACTIVE).all()
+            else:
+                # Market closed: refresh only the stocks with live queued orders.
+                rows = (db.session.query(TradeOrders.stock_id)
+                        .filter(TradeOrders.order_status.in_(_OPEN_STATUSES),
+                                TradeOrders.order_type.in_(_QUEUED_TYPES))
+                        .distinct().all())
+                stock_ids = [r[0] for r in rows]
+                stocks = (Stocks.query.filter(Stocks.stock_id.in_(stock_ids)).all()
+                          if stock_ids else [])
+
+            if stocks:
+                summary = refresh_stocks(stocks)
+                db.session.commit()
+                if summary.get('updated'):
+                    logger.debug(f'[scheduler] refreshed {summary["updated"]} live price(s)')
+                if summary.get('rate_limited'):
+                    logger.warning('[scheduler] Upstox token expired/invalid — live prices are stale. Regenerate UPSTOX_ACCESS_TOKEN.')
     except Exception as e:
         db.session.rollback()
         logger.warning(f'[scheduler] live price refresh failed (non-fatal): {e}')

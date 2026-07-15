@@ -10,3 +10,4 @@ ns = api.namespace(
 logger = logging.getLogger(__name__)
 
 from .routes import *
+from .finance_routes import *

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
-  User, Bell, Shield, CreditCard, Check, Camera, ChevronRight,
+  User, Bell, Shield, Check, Camera, ChevronRight,
   Lock, Eye, EyeOff, AlertTriangle, LogOut, Upload, Globe, Trash2,
   Key, Wallet, Building, Smartphone, Plus, ArrowUpRight, ArrowDownLeft,
   PlusCircle, AlertCircle, CheckCircle, X, Loader2,
@@ -27,7 +27,6 @@ const tabs = [
   { id: "profile",  label: "Profile",          icon: User },
   { id: "notifs",   label: "Notifications",    icon: Bell },
   { id: "security", label: "Security",         icon: Shield },
-  { id: "billing",  label: "Plans",            icon: CreditCard },
   { id: "wallet",   label: "Wallet",           icon: Wallet },
   { id: "kyc",      label: "KYC Verification", icon: Shield },
 ];
@@ -121,12 +120,6 @@ export function UserSettings() {
   const [passwordForm,    setPasswordForm]    = useState({
     current_password: "", new_password: "", confirm_password: "",
   });
-
-  /* ── Billing ─────────────────────────────────────────────────────────────── */
-  const [plans,          setPlans]          = useState([]);
-  const [mySub,          setMySub]          = useState(null);
-  const [billingHistory, setBillingHistory] = useState([]);
-  const [billingCycle,   setBillingCycle]   = useState("MONTHLY");   // MONTHLY | QUARTERLY | HALFYEARLY
 
   /* ── KYC ─────────────────────────────────────────────────────────────────── */
   const [kycData,       setKycData]       = useState(null);
@@ -247,24 +240,6 @@ export function UserSettings() {
     if (data.bool) setSessions(data.response?.sessions || (Array.isArray(data.response) ? data.response : []));
   }, []);
 
-  const fetchPlans = useCallback(async () => {
-    const res  = await fetch(`${API_BASE}/subscriptions/plans`, { headers: authHdr() });
-    const data = await res.json();
-    if (data.bool) setPlans(data.response?.plans || (Array.isArray(data.response) ? data.response : []));
-  }, []);
-
-  const fetchSubscription = useCallback(async () => {
-    const res  = await fetch(`${API_BASE}/subscriptions/my`, { headers: authHdr() });
-    const data = await res.json();
-    if (data.bool && data.response) setMySub(data.response?.subscription || data.response);
-  }, []);
-
-  const fetchBillingHistory = useCallback(async () => {
-    const res  = await fetch(`${API_BASE}/subscriptions/billing_history`, { headers: authHdr() });
-    const data = await res.json();
-    if (data.bool) setBillingHistory(data.response?.history || data.response?.transactions || (Array.isArray(data.response) ? data.response : []));
-  }, []);
-
   const fetchKycStatus = useCallback(async () => {
     const res  = await fetch(`${API_BASE}/kyc/status`, { headers: authHdr() });
     const data = await res.json();
@@ -293,7 +268,6 @@ export function UserSettings() {
         if (active === "profile")  await fetchProfile();
         if (active === "notifs")   await fetchPreferences();
         if (active === "security") { await fetchSecurityInfo(); await fetchSessions(); }
-        if (active === "billing")  { await fetchPlans(); await fetchSubscription(); await fetchBillingHistory(); }
         if (active === "kyc")      await fetchKycStatus();
         if (active === "wallet")   { await fetchWallet(); await fetchWalletTransactions(); }
       } catch (err) { console.error("Settings load error:", err); }
@@ -406,31 +380,6 @@ export function UserSettings() {
       method: "POST", headers: jsonHdr(), body: JSON.stringify({ totp_code: totpCode }),
     });
     setTwoFAEnabled(true); setShowTotpModal(false); setSetupTotp(null); setTotpCode("");
-  };
-
-  const handleSubscribe = async (planId) => {
-    const res  = await fetch(`${API_BASE}/subscriptions/subscribe`, {
-      method: "POST", headers: jsonHdr(),
-      body: JSON.stringify({ plan_id: planId, billing_cycle: billingCycle }),
-    });
-    const data = await res.json();
-    if (data.bool) {
-      await fetchSubscription();
-      window.dispatchEvent(new Event("subscription-changed"));   // refresh profile plan badge
-      showToast("Subscribed successfully!");
-    }
-    else showToast(data.response?.message || "Subscription failed.", false);
-  };
-
-  const handleCancelSub = async () => {
-    if (!window.confirm("Cancel subscription?")) return;
-    const res  = await fetch(`${API_BASE}/subscriptions/cancel`, { method: "POST", headers: authHdr() });
-    const data = await res.json();
-    if (data.bool) {
-      await fetchSubscription();
-      window.dispatchEvent(new Event("subscription-changed"));
-      showToast("Subscription cancelled.");
-    }
   };
 
   /* ── KYC submit ────────────────────────────────────────────────────────── */
@@ -739,7 +688,7 @@ export function UserSettings() {
 
       <div>
         <h1 className="text-xl font-bold text-white">Settings</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Manage your account preferences, configurations and subscription tiers.</p>
+        <p className="text-sm text-gray-500 mt-0.5">Manage your account preferences and configurations.</p>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-5">
@@ -789,7 +738,7 @@ export function UserSettings() {
                         <div className="text-sm font-medium text-white">{profile.first_name} {profile.last_name}</div>
                         <div className="text-xs text-gray-500 mb-1">{profile.email}</div>
                         <span className="px-2.5 py-0.5 bg-cyan-500/10 border border-cyan-500/15 rounded-full text-[10px] text-cyan-400 font-medium">
-                          {mySub?.plan_name || mySub?.plan?.plan_name || "Free"} Member
+                          Member
                         </span>
                       </div>
                     </div>
@@ -932,103 +881,6 @@ export function UserSettings() {
                           <button onClick={() => handleRevokeSession(s.session_id || s.id)}
                             className="px-2.5 py-1 text-[10px] font-bold text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg cursor-pointer">Revoke</button>
                         )}
-                      </div>
-                    ))}
-                  </div>
-                </motion.div>
-              )}
-
-              {/* ─── BILLING ─── */}
-              {active === "billing" && (
-                <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="space-y-4">
-                  <div className="bg-gradient-to-br from-cyan-500/8 to-blue-600/5 border border-cyan-500/15 rounded-2xl p-5">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="text-xs text-gray-500">Active Plan Tier</div>
-                        <div className="text-2xl font-bold text-white">{mySub?.plan?.plan_name || mySub?.plan_name || "Free"} Plan</div>
-                        <div className="text-sm text-cyan-400 mt-1">{mySub?.amount_paid ? `₹${mySub.amount_paid} · ${({MONTHLY:"1 month",QUARTERLY:"3 months",HALFYEARLY:"6 months",ANNUALLY:"12 months"}[mySub.billing_cycle] || mySub.billing_cycle || "billed")}` : "Free tier"}</div>
-                      </div>
-                      <span className="px-3 py-1.5 bg-cyan-500/15 border border-cyan-500/25 rounded-xl text-sm text-cyan-400">{mySub?.status || "Active"}</span>
-                    </div>
-                    {mySub && mySub.status === "ACTIVE" && (
-                      <button onClick={handleCancelSub} className="mt-4 px-4 py-2 bg-[#141C30] border border-white/8 rounded-xl text-xs text-gray-400 hover:text-white cursor-pointer">Cancel Plan</button>
-                    )}
-                  </div>
-                  <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-5">
-                    <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
-                      <div className="text-sm font-medium text-white">Available Upgrades</div>
-                      {/* Billing period selector: 1 / 3 / 6 months */}
-                      <div className="flex gap-1 bg-[#141C30] border border-white/8 rounded-xl p-1">
-                        {[
-                          { key: "MONTHLY",    label: "1 Month",  field: "price_monthly"   },
-                          { key: "QUARTERLY",  label: "3 Months", field: "price_quarterly" },
-                          { key: "HALFYEARLY", label: "6 Months", field: "price_halfyearly"},
-                        ].map((c) => (
-                          <button key={c.key} onClick={() => setBillingCycle(c.key)}
-                            className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${billingCycle === c.key ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/25" : "text-gray-500 hover:text-gray-300"}`}>
-                            {c.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    {(() => {
-                      // Only show plans ABOVE the current tier (upgrades). On the
-                      // highest plan, there's nothing left to upgrade to.
-                      const currentOrder = mySub?.plan?.sort_order
-                        ?? (plans.find((p) => (p.plan_tier || "").toUpperCase() === "FREE")?.sort_order ?? 0);
-                      const upgradePlans = plans.filter((p) => (p.sort_order ?? 0) > currentOrder);
-                      if (upgradePlans.length === 0) {
-                        return (
-                          <div className="py-8 text-center text-sm text-gray-500">
-                            You're on our highest plan — nothing left to upgrade. 🎉
-                          </div>
-                        );
-                      }
-                      const cycleMeta = {
-                        MONTHLY:    { field: "price_monthly",    label: "month",    months: 1 },
-                        QUARTERLY:  { field: "price_quarterly",  label: "3 months", months: 3 },
-                        HALFYEARLY: { field: "price_halfyearly", label: "6 months", months: 6 },
-                      }[billingCycle];
-                      return (
-                        <div className="grid md:grid-cols-2 gap-4">
-                          {upgradePlans.map((p) => {
-                            const price   = Number(p[cycleMeta.field] ?? p.price_monthly ?? 0);
-                            const perMonth = cycleMeta.months > 1 ? price / cycleMeta.months : null;
-                            return (
-                              <div key={p.plan_id || p.id} className="p-4 rounded-xl border border-white/5 bg-[#141C30] flex flex-col justify-between gap-3">
-                                <div>
-                                  <div className="text-sm font-bold text-white">{p.plan_name || p.name}</div>
-                                  <div className="text-cyan-400 font-bold text-lg mt-1">₹{price.toLocaleString("en-IN")}<span className="text-xs text-gray-500 font-normal"> / {cycleMeta.label}</span></div>
-                                  {perMonth != null && (
-                                    <div className="text-[11px] text-gray-600">≈ ₹{perMonth.toFixed(0)}/mo</div>
-                                  )}
-                                  <p className="text-xs text-gray-500 mt-1">{p.description || p.tagline}</p>
-                                </div>
-                                <button onClick={() => handleSubscribe(p.plan_id || p.id)}
-                                  className="w-full py-2 rounded-xl text-xs font-semibold cursor-pointer transition-all bg-gradient-to-r from-cyan-500 to-blue-600 text-white">
-                                  Choose Plan
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                  <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
-                    <div className="px-5 py-4 border-b border-white/5 text-sm font-medium text-white">Billing History</div>
-                    {billingHistory.length === 0 ? (
-                      <div className="py-8 text-center text-xs text-gray-600">No billing history yet</div>
-                    ) : billingHistory.map((b, i) => (
-                      <div key={b.transaction_id || b.id || i} className="flex items-center justify-between px-5 py-3.5 border-b border-white/5 last:border-0">
-                        <div>
-                          <div className="text-sm text-white font-medium">{b.transaction_type || b.plan_name || "Subscription"}</div>
-                          <div className="text-xs text-gray-600 mt-0.5">{b.created_on ? new Date(b.created_on).toLocaleDateString() : ""}</div>
-                        </div>
-                        <div>
-                          <span className="text-sm text-white font-semibold">₹{parseFloat(b.total_amount || b.amount || 0).toFixed(2)}</span>
-                          <span className="ml-3 px-2 py-0.5 bg-emerald-500/10 text-emerald-400 text-xs rounded-full">{b.status || "Paid"}</span>
-                        </div>
                       </div>
                     ))}
                   </div>

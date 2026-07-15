@@ -335,8 +335,8 @@ class Login(Resource):
             if user.status == UserStatus.PENDING or not user.is_email_verified:
                 _log_login(user.user_id, LoginStatus.BLOCKED, 'Email not verified')
                 return jsonify(bool=False, status=403, response={
-                    'message': 'Please verify your email and finish registration '
-                               '(select a plan and confirm the OTP) before signing in.',
+                    'message': 'Please verify your email (confirm the OTP) '
+                               'to finish registration before signing in.',
                     'requires_verification': True,
                     'email': user.email,
                 })

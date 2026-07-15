@@ -16,7 +16,6 @@ import {
   LogOut,
   ChevronDown,
   BarChart2,
-  Receipt,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { SupportChatWidget } from "../../components/SupportChatWidget";
@@ -37,7 +36,6 @@ const nav = [
   { path: "/user/watchlist",    label: "Watchlist",    icon: Star },
   { path: "/user/trade",        label: "Trade",        icon: ArrowLeftRight },
   { path: "/user/news",         label: "News",         icon: Newspaper },
-  { path: "/user/transactions", label: "Transactions", icon: Receipt },
   { path: "/user/settings",     label: "Settings",     icon: Settings },
 ];
 
@@ -160,13 +158,6 @@ export function UserLayout() {
       }
     } catch {}
   }, []);
-
-  /* Refresh the profile (and its plan badge) when the plan changes elsewhere. */
-  useEffect(() => {
-    const onSubChange = () => fetchUserProfile();
-    window.addEventListener("subscription-changed", onSubChange);
-    return () => window.removeEventListener("subscription-changed", onSubChange);
-  }, [fetchUserProfile]);
 
   /* ── Fetch holdings for search enrichment ───────────────────────────── */
   const fetchUserHoldings = useCallback(async () => {
@@ -392,7 +383,6 @@ export function UserLayout() {
     : authUser?.full_name || authUser?.name || authUser?.username || "Investor";
   const displayEmail  = userProfile?.email  || authUser?.email  || "";
   const displayAvatar = displayName.charAt(0).toUpperCase() || "I";
-  const userPlan      = userProfile?.subscription_plan || authUser?.plan || "Free";
 
   /* ════════════════════════════════════════════════════════════════════════
      RENDER
@@ -442,11 +432,10 @@ export function UserLayout() {
           </button>
         </div>
 
-        {/* Plan badge */}
+        {/* Personal view badge */}
         <div className="mx-4 my-3 px-3 py-2 bg-cyan-500/8 border border-cyan-500/15 rounded-xl flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
           <span className="text-xs text-cyan-300 font-medium">Personal View</span>
-          <span className="ml-auto text-xs text-gray-600">{userPlan}</span>
         </div>
 
         {/* Nav links */}
@@ -496,21 +485,7 @@ export function UserLayout() {
                 <div className="px-4 py-3 border-b border-white/5">
                   <div className="text-sm font-medium text-white truncate">{displayName}</div>
                   <div className="text-xs text-gray-500 truncate">{displayEmail}</div>
-                  <div className="text-xs text-cyan-400 mt-1">{userPlan} Plan</div>
                 </div>
-                <button
-                  onClick={() => { setSidebarMenu(false); navigate("/user/settings"); }}
-                  className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
-                >
-                  Account Settings
-                </button>
-                <button
-                  onClick={() => { setSidebarMenu(false); navigate("/user/transactions"); }}
-                  className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
-                >
-                  Transactions
-                </button>
-                <hr className="border-white/5 my-1" />
                 <button
                   onClick={() => { setSidebarMenu(false); handleLogout(); }}
                   className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-red-400 hover:bg-white/5 transition-colors flex items-center gap-2"
@@ -667,25 +642,12 @@ export function UserLayout() {
                     <div className="px-4 py-3 border-b border-white/5">
                       <div className="text-sm font-medium text-white truncate">{displayName}</div>
                       <div className="text-xs text-gray-500 truncate">{displayEmail}</div>
-                      <div className="text-xs text-cyan-400 mt-1">{userPlan} Plan</div>
                     </div>
                     <button
                       onClick={() => { setProfileOpen(false); navigate("/user/settings"); }}
                       className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
                     >
-                      Account Settings
-                    </button>
-                    <button
-                      onClick={() => { setProfileOpen(false); navigate("/user/settings"); }}
-                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
-                    >
                       Security
-                    </button>
-                    <button
-                      onClick={() => { setProfileOpen(false); navigate("/user/transactions"); }}
-                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
-                    >
-                      Transactions
                     </button>
                     <hr className="border-white/5 my-1" />
                     <button

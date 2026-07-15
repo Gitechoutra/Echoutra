@@ -10,6 +10,36 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def get_gateway_config() -> dict:
+    """
+    Resolve the active payment-gateway credentials.
+
+    Prefers the admin-managed config stored in `admin_settings`
+    (`FINANCE_PAYMENT_GATEWAY`, set from the admin Finance page) and falls back to
+    the `.env` values so nothing breaks when the DB config is empty. Returns a dict
+    with keys: provider, mode, key_id, key_secret, webhook_secret.
+    """
+    cfg = {
+        'provider':       'RAZORPAY',
+        'mode':           'test',
+        'key_id':         os.environ.get('RAZORPAY_KEY_ID', ''),
+        'key_secret':     os.environ.get('RAZORPAY_KEY_SECRET', ''),
+        'webhook_secret': os.environ.get('RAZORPAY_WEBHOOK_SECRET', ''),
+    }
+    try:
+        import json
+        from portal.models.admin_settings import AdminSettings
+        row = AdminSettings.query.filter_by(setting_key='FINANCE_PAYMENT_GATEWAY').first()
+        if row and row.setting_value:
+            data = json.loads(row.setting_value)
+            for k in ('provider', 'mode', 'key_id', 'key_secret', 'webhook_secret'):
+                if data.get(k):                       # only override when actually set
+                    cfg[k] = data[k]
+    except Exception as e:                            # DB unavailable / no app context → use .env
+        logger.debug(f"get_gateway_config: falling back to .env ({e})")
+    return cfg
+
+
 def _get_client():
     """Return an authenticated Razorpay client."""
     try:
@@ -17,11 +47,12 @@ def _get_client():
     except ImportError:
         raise RuntimeError("razorpay package not installed. Run: pip install razorpay")
 
-    key_id = os.environ.get('RAZORPAY_KEY_ID', '')
-    key_secret = os.environ.get('RAZORPAY_KEY_SECRET', '')
+    cfg = get_gateway_config()
+    key_id     = cfg['key_id']
+    key_secret = cfg['key_secret']
 
     if not key_id or not key_secret:
-        raise RuntimeError("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET must be set in .env")
+        raise RuntimeError("Razorpay key_id/key_secret not configured (admin Finance page or .env).")
 
     return razorpay.Client(auth=(key_id, key_secret))
 
@@ -60,7 +91,7 @@ def create_order(amount_inr: float, reference_id: int, notes: dict = None) -> di
             'amount': amount_inr,
             'amount_paise': amount_paise,
             'currency': 'INR',
-            'key_id': os.environ.get('RAZORPAY_KEY_ID', ''),
+            'key_id': get_gateway_config()['key_id'],
             'razorpay_order': order,
         }
 
@@ -75,7 +106,7 @@ def verify_payment_signature(razorpay_order_id: str, razorpay_payment_id: str, r
 
     The signature is HMAC-SHA256 of "order_id|payment_id" using the key_secret.
     """
-    key_secret = os.environ.get('RAZORPAY_KEY_SECRET', '')
+    key_secret = get_gateway_config()['key_secret']
     if not key_secret:
         logger.error("RAZORPAY_KEY_SECRET not set. Cannot verify signature.")
         return False
@@ -105,7 +136,7 @@ def verify_webhook_signature(payload_body: bytes, webhook_signature: str) -> boo
     Verify Razorpay webhook signature.
     Use this in the /payments/webhook endpoint.
     """
-    webhook_secret = os.environ.get('RAZORPAY_WEBHOOK_SECRET', '')
+    webhook_secret = get_gateway_config()['webhook_secret']
     if not webhook_secret:
         logger.warning("RAZORPAY_WEBHOOK_SECRET not set. Skipping webhook verification.")
         return True  # permissive if not configured

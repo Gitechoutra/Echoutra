@@ -13,6 +13,7 @@ import { AdminStockDetail } from "./pages/admin/AdminStockDetail";
 import { AdminAnalytics } from "./pages/admin/AdminAnalytics";
 import { AdminNews } from "./pages/admin/AdminNews";
 import { AdminSettings } from "./pages/admin/AdminSettings";
+import { AdminFinance } from "./pages/admin/AdminFinance";
 // User
 import { UserLayout } from "./pages/user/UserLayout";
 import { UserDashboard } from "./pages/user/UserDashboard";
@@ -51,6 +52,7 @@ export const router = createBrowserRouter([
       { path: "stock/:symbol", Component: AdminStockDetail },
       { path: "analytics", Component: AdminAnalytics },
       { path: "news", Component: AdminNews },
+      { path: "finance", Component: AdminFinance },
       { path: "settings", Component: AdminSettings },
     ],
   },

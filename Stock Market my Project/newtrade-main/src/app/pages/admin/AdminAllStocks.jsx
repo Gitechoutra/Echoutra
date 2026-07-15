@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
   TrendingUp, TrendingDown, Search, AlertCircle,
-  RefreshCw, Plus, X, Check, Upload, Edit2, DollarSign,
+  RefreshCw, Plus, X, Check, Upload,
   IndianRupee, Globe, BarChart2,
 } from "lucide-react";
 import { StockChart } from "../../components/StockChart";
@@ -107,18 +107,6 @@ export function AdminAllStocks() {
   const [addLoading,   setAddLoading]   = useState(false);
   const [addError,     setAddError]     = useState("");
   const [addSuccess,   setAddSuccess]   = useState(false);
-
-  /* ── Update Price modal ── */
-  const [showUpdateModal, setShowUpdateModal] = useState(false);
-  const [updateTarget,    setUpdateTarget]    = useState(null);
-  const [updatePrice,     setUpdatePrice]     = useState("");
-  const [updatePrevClose, setUpdatePrevClose] = useState("");
-  const [updateHigh,      setUpdateHigh]      = useState("");
-  const [updateLow,       setUpdateLow]       = useState("");
-  const [updateVolume,    setUpdateVolume]     = useState("");
-  const [updateLoading,   setUpdateLoading]   = useState(false);
-  const [updateError,     setUpdateError]     = useState("");
-  const [updateSuccess,   setUpdateSuccess]   = useState(false);
 
   /* ── Live market data (Twelve Data) ── */
   const [liveRefreshing, setLiveRefreshing] = useState(false);
@@ -302,42 +290,6 @@ export function AdminAllStocks() {
     setFormErrors({}); setAddError(""); setAddSuccess(false);
   };
 
-  /* ── Update Price ── */
-  const openUpdateModal = (stock, e) => {
-    e.stopPropagation();
-    setUpdateTarget(stock);
-    setUpdatePrice(stock.price?.toFixed(2) || "");
-    setUpdatePrevClose(stock.prevClose?.toFixed(2) || "");
-    setUpdateHigh(stock.dayHigh > 0 ? stock.dayHigh.toFixed(2) : "");
-    setUpdateLow(stock.dayLow  > 0 ? stock.dayLow.toFixed(2)  : "");
-    setUpdateVolume(stock.volume > 0 ? String(stock.volume) : "");
-    setUpdateError(""); setUpdateSuccess(false);
-    setShowUpdateModal(true);
-  };
-
-  const handleUpdatePrice = async () => {
-    if (!updateTarget?.stock_id) { setUpdateError("Stock ID missing."); return; }
-    if (!updatePrice || isNaN(parseFloat(updatePrice))) { setUpdateError("Valid price required."); return; }
-    setUpdateLoading(true); setUpdateError("");
-    try {
-      const payload = {
-        current_price: parseFloat(updatePrice),
-        ...(updatePrevClose && { previous_close: parseFloat(updatePrevClose) }),
-        ...(updateHigh      && { day_high:       parseFloat(updateHigh)      }),
-        ...(updateLow       && { day_low:        parseFloat(updateLow)       }),
-        ...(updateVolume    && { volume:         parseInt(updateVolume, 10)  }),
-      };
-      const res  = await fetch(`${API_BASE}/stocks/${updateTarget.stock_id}/update_price`, {
-        method: "PUT", headers: authHdr(), body: JSON.stringify(payload),
-      });
-      const data = await res.json();
-      if (!data.bool) { setUpdateError(data.response?.message || "Failed."); return; }
-      setUpdateSuccess(true);
-      setTimeout(() => { setShowUpdateModal(false); setUpdateTarget(null); setUpdateSuccess(false); fetchData(); }, 1500);
-    } catch { setUpdateError("Network error."); }
-    finally { setUpdateLoading(false); }
-  };
-
   /* ── Live: refresh ALL stock prices from Twelve Data ── */
   const handleRefreshLive = async () => {
     setLiveRefreshing(true); setLiveMsg(""); setError("");
@@ -350,29 +302,6 @@ export function AdminAllStocks() {
       setTimeout(() => setLiveMsg(""), 6000);
     } catch { setError("Network error while refreshing live prices."); }
     finally { setLiveRefreshing(false); }
-  };
-
-  /* ── Live: fetch ONE stock's price from Twelve Data (inside update modal) ── */
-  const handleFetchLiveOne = async () => {
-    if (!updateTarget?.stock_id) { setUpdateError("Stock ID missing."); return; }
-    setUpdateLoading(true); setUpdateError("");
-    try {
-      const res  = await fetch(`${API_BASE}/stocks/${updateTarget.stock_id}/refresh_price`, {
-        method: "POST", headers: authHdr(),
-      });
-      const data = await res.json();
-      if (!data.bool) { setUpdateError(data.response?.message || "Live fetch failed."); return; }
-      const s = data.response?.stock || {};
-      // Prefill the modal inputs with the freshly fetched live values
-      if (s.current_price   != null) setUpdatePrice(String(s.current_price));
-      if (s.previous_close  != null) setUpdatePrevClose(String(s.previous_close));
-      if (s.day_high        != null) setUpdateHigh(String(s.day_high));
-      if (s.day_low         != null) setUpdateLow(String(s.day_low));
-      if (s.volume          != null) setUpdateVolume(String(s.volume));
-      setUpdateSuccess(true);
-      setTimeout(() => { setUpdateSuccess(false); fetchData(); }, 1200);
-    } catch { setUpdateError("Network error."); }
-    finally { setUpdateLoading(false); }
   };
 
   /* ── Derived ── */
@@ -582,17 +511,12 @@ export function AdminAllStocks() {
 
                       {/* Actions */}
                       <td className="px-4 py-3.5" onClick={e => e.stopPropagation()}>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center">
                           <button
                             onClick={e => { e.stopPropagation(); setChartTarget(s); }}
                             title="View interactive chart"
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-xs text-violet-300 hover:bg-violet-500/20 transition-all opacity-0 group-hover:opacity-100 whitespace-nowrap">
+                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-violet-500/10 border border-violet-500/20 rounded-lg text-xs text-violet-300 hover:bg-violet-500/20 transition-all whitespace-nowrap">
                             <BarChart2 className="w-3 h-3" /> Chart
-                          </button>
-                          <button
-                            onClick={e => openUpdateModal(s, e)}
-                            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-500/10 border border-cyan-500/20 rounded-lg text-xs text-cyan-300 hover:bg-cyan-500/20 transition-all opacity-0 group-hover:opacity-100 whitespace-nowrap">
-                            <Edit2 className="w-3 h-3" /> Update
                           </button>
                         </div>
                       </td>
@@ -611,139 +535,6 @@ export function AdminAllStocks() {
           </div>
         )}
       </div>
-
-      {/* ══════════════════════════ UPDATE PRICE MODAL ══════════════════════ */}
-      <AnimatePresence>
-        {showUpdateModal && updateTarget && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-[#0C1220] border border-cyan-500/20 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
-
-              <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">
-                    <IndianRupee className="w-4 h-4 text-cyan-400" />
-                  </div>
-                  <div>
-                    <div className="text-base font-bold text-white">
-                      Update Price — {updateTarget.symbol}
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-xs text-gray-500">{updateTarget.name}</span>
-                      <CurrBadge currency={updateTarget.currency} />
-                    </div>
-                  </div>
-                </div>
-                <button onClick={() => setShowUpdateModal(false)}
-                  className="p-1.5 rounded-lg text-gray-500 hover:text-white hover:bg-white/10 transition-all">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              {updateSuccess ? (
-                <div className="flex flex-col items-center justify-center py-12 px-6">
-                  <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }}
-                    className="w-14 h-14 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-3">
-                    <Check className="w-7 h-7 text-emerald-400" />
-                  </motion.div>
-                  <div className="text-base font-bold text-white mb-1">Price Updated!</div>
-                  <div className="text-xs text-gray-500">
-                    {updateTarget.symbol} now at {fmtPrice(parseFloat(updatePrice), updateTarget.currency)}
-                  </div>
-                </div>
-              ) : (
-                <div className="p-6 space-y-4">
-                  <div className="bg-[#141C30] border border-white/5 rounded-xl p-3 flex items-center justify-between">
-                    <span className="text-xs text-gray-500">Current Price</span>
-                    <span className="text-sm font-bold text-white">
-                      {fmtPrice(updateTarget.price, updateTarget.currency)}
-                    </span>
-                  </div>
-
-                  {updateError && (
-                    <div className="flex items-center gap-2 px-3 py-2.5 bg-red-500/10 border border-red-500/20 rounded-xl text-xs text-red-400">
-                      <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />{updateError}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="col-span-2">
-                      <label className="text-xs text-gray-500 mb-1.5 block">
-                        New Price ({updateTarget.currency}) <span className="text-red-400">*</span>
-                      </label>
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">
-                          {currSym(updateTarget.currency)}
-                        </span>
-                        <input type="number" min="0" step="0.01" value={updatePrice}
-                          onChange={e => setUpdatePrice(e.target.value)}
-                          placeholder={updateTarget.price.toFixed(2)}
-                          className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-7 pr-3 py-2.5 text-sm text-white font-bold placeholder-gray-700 focus:outline-none focus:border-cyan-500/40" />
-                      </div>
-                    </div>
-                    {[
-                      { label: "Prev Close", val: updatePrevClose, set: setUpdatePrevClose },
-                      { label: "Day High",   val: updateHigh,      set: setUpdateHigh },
-                      { label: "Day Low",    val: updateLow,       set: setUpdateLow },
-                    ].map(({ label, val, set }) => (
-                      <div key={label}>
-                        <label className="text-xs text-gray-500 mb-1.5 block">{label}</label>
-                        <div className="relative">
-                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-xs">
-                            {currSym(updateTarget.currency)}
-                          </span>
-                          <input type="number" min="0" step="0.01" value={val}
-                            onChange={e => set(e.target.value)} placeholder="Optional"
-                            className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-cyan-500/40" />
-                        </div>
-                      </div>
-                    ))}
-                    <div>
-                      <label className="text-xs text-gray-500 mb-1.5 block">Volume</label>
-                      <input type="number" min="0" value={updateVolume}
-                        onChange={e => setUpdateVolume(e.target.value)} placeholder="Optional"
-                        className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-cyan-500/40" />
-                    </div>
-                  </div>
-
-                  {updatePrice && updatePrevClose && (
-                    <div className="bg-[#141C30] border border-white/5 rounded-xl p-3 flex items-center justify-between">
-                      <span className="text-xs text-gray-500">Implied Change</span>
-                      <span className={`text-sm font-bold ${
-                        parseFloat(updatePrice) >= parseFloat(updatePrevClose)
-                          ? "text-emerald-400" : "text-red-400"
-                      }`}>
-                        {parseFloat(updatePrice) >= parseFloat(updatePrevClose) ? "+" : ""}
-                        {(((parseFloat(updatePrice) - parseFloat(updatePrevClose)) / parseFloat(updatePrevClose)) * 100).toFixed(2)}%
-                      </span>
-                    </div>
-                  )}
-
-                  <button onClick={handleFetchLiveOne} disabled={updateLoading}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 bg-emerald-600/15 border border-emerald-500/30 rounded-xl text-sm font-medium text-emerald-400 hover:bg-emerald-600/25 transition-colors disabled:opacity-60">
-                    <RefreshCw className={`w-4 h-4 ${updateLoading ? "animate-spin" : ""}`} />
-                    Fetch Live Price from Market
-                  </button>
-
-                  <div className="flex gap-3 pt-1">
-                    <button onClick={() => setShowUpdateModal(false)}
-                      className="flex-1 py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-sm text-gray-400 hover:text-white">
-                      Cancel
-                    </button>
-                    <button onClick={handleUpdatePrice} disabled={updateLoading}
-                      className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60">
-                      {updateLoading
-                        ? <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Updating…</>
-                        : <><DollarSign className="w-4 h-4" />Save Price</>}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* ══════════════════════════ INTERACTIVE CHART MODAL ═════════════════ */}
       <AnimatePresence>
