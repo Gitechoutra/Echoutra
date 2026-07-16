@@ -649,6 +649,17 @@ class ChangePassword(Resource):
                 full_name=user.full_name or user.username
             )
 
+            # Security alerts are deliberately un-silenceable — see notify._ALWAYS_DELIVER.
+            from portal.helpers.notify import notify_user
+            from portal.models.notifications import NotificationType, NotificationPriority
+            notify_user(
+                user_id, NotificationType.SECURITY,
+                title='Your password was changed',
+                body='Your account password was just changed. If this wasn\'t you, '
+                     'reset your password and contact support immediately.',
+                priority=NotificationPriority.HIGH,
+            )
+
             return jsonify(bool=True, status=200,
                            response={'message': 'Password changed successfully.'})
 

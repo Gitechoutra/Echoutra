@@ -25,6 +25,7 @@ def init_app(app):
         from .billing_transactions import BillingTransactions, TransactionStatus
         from .wallets import Wallets, WalletStatus
         from .wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
+        from .payout_methods import PayoutMethods, PayoutMethodType
         from .stocks import Stocks, StockStatus, AssetType
         from .stock_price_history import StockPriceHistory, PriceInterval
         from .stock_analytics import StockAnalytics
@@ -33,6 +34,7 @@ def init_app(app):
         from .portfolios import Portfolios, PortfolioType
         from .portfolio_holdings import PortfolioHoldings
         from .portfolio_performance_history import PortfolioPerformanceHistory, SnapshotInterval
+        from .portfolio_value_ticks import PortfolioValueTicks
         from .watchlists import Watchlists
         from .watchlist_items import WatchlistItems
         from .watchlist_alerts import WatchlistAlerts, AlertCondition, AlertStatus

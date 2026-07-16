@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
   TrendingUp, TrendingDown, ArrowUpRight, Plus,
-  ChevronRight, DollarSign, Wallet, PieChart as PieIcon,
+  ChevronRight, IndianRupee, Wallet, PieChart as PieIcon,
   RefreshCw, AlertCircle, Briefcase,
 } from "lucide-react";
 import {
@@ -11,6 +11,7 @@ import {
   XAxis, YAxis, PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
 import { useAuth } from "../../context/AuthContext";
+import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -51,6 +52,8 @@ export function UserDashboard() {
   const [portfolio,     setPortfolio]     = useState(null);
   const [holdings,      setHoldings]      = useState([]);
   const [perfHistory,   setPerfHistory]   = useState([]);
+  // True when the chart is showing today's value ticks rather than daily history.
+  const [isIntraday,    setIsIntraday]    = useState(false);
   const [myStocksToday, setMyStocksToday] = useState([]);
   const [marketIndices, setMarketIndices] = useState([]);
   const [dailyPnl,      setDailyPnl]      = useState([]);
@@ -142,26 +145,34 @@ export function UserDashboard() {
 
             if (perfRes.status === "fulfilled") {
               const pd = await perfRes.value.json();
-              if (pd.bool && pd.response?.data?.length > 0) {
-                setPerfHistory(pd.response.data.map((pt) => ({
-                  date:  (pt.date || "").slice(5),
-                  close: parseFloat(pt.total_value || 0),
-                })));
-              } else if (loadedHoldings.length > 0) {
-                const invested = loadedHoldings.reduce(
-                  (acc, h) => acc + parseFloat(h.total_invested || 0), 0
+              // Only ever plot real data. This used to fall back to a fabricated
+              // two-point line (invested → current value, dated yesterday → today)
+              // whenever no snapshots existed — a trend the portfolio never followed.
+              const records = (pd.bool && pd.response?.data) || [];
+
+              // One snapshot per day means no line to draw early on. The intraday
+              // value ticks are real samples of the portfolio as prices moved.
+              if (records.length < 2) {
+                const tRes = await fetch(
+                  `${API_BASE}/portfolios/${p.portfolio_id}/performance?interval=INTRADAY&limit=300`,
+                  { headers: authHdr() }
                 );
-                const current = loadedHoldings.reduce(
-                  (acc, h) => acc + parseFloat(h.current_value || h.total_invested || 0), 0
-                );
-                const today = new Date();
-                const fmt = (d) => `${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-                const past = new Date(today); past.setDate(past.getDate() - 1);
-                setPerfHistory([
-                  { date: fmt(past),  close: invested },
-                  { date: fmt(today), close: current  },
-                ]);
+                const tData = await tRes.json();
+                const ticks = (tData.bool && tData.response?.data) || [];
+                if (ticks.length > records.length) {
+                  setPerfHistory(ticks.map((t) => ({
+                    date:  new Date(t.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                    close: parseFloat(t.total_value || 0),
+                  })));
+                  setIsIntraday(true);
+                  return;
+                }
               }
+              setIsIntraday(false);
+              setPerfHistory(records.map((pt) => ({
+                date:  (pt.date || "").slice(5),
+                close: parseFloat(pt.total_value || 0),
+              })));
             }
           }
         }
@@ -289,7 +300,7 @@ export function UserDashboard() {
             label: "Cash Balance",
             value: fmtMoney(cashBalance, walletCurrency, { compact: true }),
             sub:   "Available to invest",
-            icon:  DollarSign, up: null,
+            icon:  IndianRupee, up: null,
             color: "from-blue-500/15 to-blue-500/5", border: "border-blue-500/15", ic: "text-blue-400",
           },
           {
@@ -376,16 +387,21 @@ export function UserDashboard() {
                     tickLine={false} axisLine={false}
                     interval="preserveStartEnd"
                   />
+                  {/* Without an explicit domain Recharts anchors the axis at 0, which
+                      pins a ₹30k line flat against the top of an empty chart. */}
                   <YAxis
                     tick={{ fill: "#4B5563", fontSize: 10 }}
-                    tickLine={false} axisLine={false}
-                    tickFormatter={(v) => fmtMoney(v, portfolioCurrency, { compact: true })}
+                    tickLine={false} axisLine={false} width={52}
+                    domain={valueDomain}
+                    tickFormatter={fmtAxisINR}
                   />
                   <Tooltip
                     contentStyle={{ background: "#0C1220", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, fontSize: 11 }}
                     formatter={(v) => [fmtMoney(v, portfolioCurrency, { decimals: 2 }), "Value"]}
                   />
-                  <Area type="monotone" dataKey="close" stroke="#06B6D4" strokeWidth={2} fill="url(#udashGrad)" dot={false} />
+                  {/* A single snapshot has no line to draw — show the point itself. */}
+                  <Area type="monotone" dataKey="close" stroke="#06B6D4" strokeWidth={2}
+                    fill="url(#udashGrad)" dot={showDots(chartData)} />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
@@ -395,6 +411,16 @@ export function UserDashboard() {
               </div>
             )}
           </div>
+          {isIntraday && chartData.length > 1 && (
+            <p className="text-[11px] text-gray-600 mt-2">
+              Showing today's value as prices moved. Daily history builds up from here.
+            </p>
+          )}
+          {chartData.length === 1 && (
+            <p className="text-[11px] text-gray-600 mt-2">
+              Your first data point — the chart fills out as your portfolio is tracked.
+            </p>
+          )}
         </div>
 
         <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-5">

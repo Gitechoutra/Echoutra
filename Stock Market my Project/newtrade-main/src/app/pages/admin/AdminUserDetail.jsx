@@ -12,6 +12,7 @@ import {
   AreaChart, Area, ResponsiveContainer, Tooltip,
   XAxis, YAxis, PieChart, Pie, Cell,
 } from "recharts";
+import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
 
 const API_BASE  = "http://127.0.0.1:5050/v1";
 const getToken  = () => localStorage.getItem("access_token");
@@ -135,6 +136,8 @@ export function AdminUserDetail() {
   const [portfolio,    setPortfolio]    = useState(null);
   const [holdings,     setHoldings]     = useState([]);
   const [perfHistory,  setPerfHistory]  = useState([]);
+  // True when the chart is showing today's value ticks rather than daily history.
+  const [isIntraday,   setIsIntraday]   = useState(false);
   const [wallet,       setWallet]       = useState(null);
   const [kyc,          setKyc]          = useState(null);
   const [subscription, setSubscription] = useState(null);
@@ -184,7 +187,25 @@ export function AdminUserDetail() {
         const perfData = await apiFetch(
           `${API_BASE}/portfolios/${p.portfolio_id}/performance?interval=DAILY&limit=60`
         );
-        if (perfData.bool) setPerfHistory(perfData.response?.data || []);
+        const records = (perfData.bool && perfData.response?.data) || [];
+
+        /* Daily snapshots are one point per day, so a portfolio in its first days
+           has nothing to draw a line from. Fall back to the intraday value ticks —
+           real samples of the portfolio's value as prices moved. Mirrors what the
+           user sees on their own portfolio page. */
+        if (records.length < 2) {
+          const tickData = await apiFetch(
+            `${API_BASE}/portfolios/${p.portfolio_id}/performance?interval=INTRADAY&limit=300`
+          );
+          const ticks = (tickData.bool && tickData.response?.data) || [];
+          if (ticks.length > records.length) {
+            setPerfHistory(ticks);
+            setIsIntraday(true);
+            return;
+          }
+        }
+        setIsIntraday(false);
+        setPerfHistory(records);
       }
     }
   }, [userId, apiFetch]);
@@ -414,6 +435,8 @@ export function AdminUserDetail() {
   const displayName   = userData?.full_name   || profile?.display_name || "—";
   const displayEmail  = userData?.email        || "—";
   const displayAvatar = (displayName).slice(0, 2).toUpperCase();
+  // Profile picture: /user_profiles/<id> carries it, /users/<id> mirrors it as avatar_url.
+  const avatarUrl     = profile?.avatar_url || userData?.avatar_url || "";
   const displayStatus = userData?.status       || "—";
   const displayPlan   = subscription?.plan?.plan_name || "Free";
   const displayCountry= profile?.country       || userData?.country || "—";
@@ -429,9 +452,19 @@ export function AdminUserDetail() {
   const up                  = totalReturnPct >= 0;
 
   const chartData = perfHistory.map((p) => ({
-    date:  p.date?.slice(5) || "",
+    // Intraday ticks carry a full ISO timestamp; daily snapshots carry YYYY-MM-DD.
+    date:  isIntraday
+      ? new Date(p.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : (p.date?.slice(5) || ""),
     close: parseFloat(p.total_value || 0),
   }));
+
+  // Chart direction: first → last point, so the line reflects the period shown
+  // rather than the all-time figure (`up`) beside it. Falls back to all-time when
+  // there is a single point and no movement to derive.
+  const chartUp = chartData.length > 1
+    ? chartData[chartData.length - 1].close >= chartData[0].close
+    : up;
 
   // ─────────────────────────────────────────────────────────────────────────
   //  Loading / error states
@@ -673,9 +706,14 @@ export function AdminUserDetail() {
         <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
 
           <div className="relative">
-            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-600 to-purple-700 flex items-center justify-center text-2xl font-black text-white shadow-xl shadow-violet-500/20">
-              {displayAvatar}
-            </div>
+            {avatarUrl ? (
+              <img src={avatarUrl} alt=""
+                className="w-16 h-16 rounded-2xl object-cover border border-white/10 shadow-xl shadow-violet-500/20" />
+            ) : (
+              <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-600 to-purple-700 flex items-center justify-center text-2xl font-black text-white shadow-xl shadow-violet-500/20">
+                {displayAvatar}
+              </div>
+            )}
             <div className={`absolute -bottom-1 -right-1 w-4 h-4 rounded-full border-2 border-[#0C1220]
               ${displayStatus === "ACTIVE" || displayStatus === "Active" ? "bg-emerald-400" : "bg-gray-500"}`}
             />
@@ -796,26 +834,44 @@ export function AdminUserDetail() {
               <div className="h-52">
                 {chartData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={chartData}>
+                    <AreaChart data={chartData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
                       <defs>
                         <linearGradient id="udGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%"  stopColor={up?"#10B981":"#EF4444"} stopOpacity={0.25} />
-                          <stop offset="95%" stopColor={up?"#10B981":"#EF4444"} stopOpacity={0} />
+                          <stop offset="5%"  stopColor={chartUp?"#10B981":"#EF4444"} stopOpacity={0.25} />
+                          <stop offset="95%" stopColor={chartUp?"#10B981":"#EF4444"} stopOpacity={0} />
                         </linearGradient>
                       </defs>
                       <XAxis dataKey="date" tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                      <YAxis tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} tickFormatter={(v)=>`₹${(v/1000).toFixed(0)}k`} />
+                      {/* Without an explicit domain Recharts anchors the axis at 0, which
+                          pins the line flat against the top of an empty chart. */}
+                      <YAxis
+                        tick={{fill:"#4B5563",fontSize:10}} tickLine={false} axisLine={false} width={52}
+                        domain={valueDomain}
+                        tickFormatter={fmtAxisINR}
+                      />
                       <Tooltip
                         contentStyle={{background:"#0C1220",border:"1px solid rgba(255,255,255,.08)",borderRadius:12,fontSize:11}}
                         formatter={(v)=>[fmtINR(v),"Value"]}
                       />
-                      <Area type="monotone" dataKey="close" stroke={up?"#10B981":"#EF4444"} strokeWidth={2} fill="url(#udGrad)" dot={false} />
+                      {/* A single snapshot has no line to draw — show the point itself. */}
+                      <Area type="monotone" dataKey="close" stroke={chartUp?"#10B981":"#EF4444"} strokeWidth={2}
+                        fill="url(#udGrad)" dot={showDots(chartData)} />
                     </AreaChart>
                   </ResponsiveContainer>
                 ) : (
                   <div className="flex items-center justify-center h-full text-sm text-gray-600">No performance data yet</div>
                 )}
               </div>
+              {isIntraday && chartData.length > 1 && (
+                <div className="text-[11px] text-gray-600 mt-2">
+                  Showing today's value as prices moved. Daily history builds up from here.
+                </div>
+              )}
+              {chartData.length === 1 && (
+                <div className="text-[11px] text-gray-600 mt-2">
+                  First data point — the chart fills out as this portfolio is tracked.
+                </div>
+              )}
             </div>
 
             <div className="grid sm:grid-cols-2 gap-4">
@@ -989,7 +1045,8 @@ export function AdminUserDetail() {
                     const pnl = h.unrealized_pnl || 0;
                     const pct = h.unrealized_pnl_percent || 0;
                     const hUp = pnl >= 0;
-                    const currSym = (h.currency === "USD") ? "$" : "₹";
+                    // The platform trades exclusively in INR — no USD branch.
+                    const currSym = "₹";
                     return (
                       <motion.tr key={h.holding_id || i} initial={{opacity:0}} animate={{opacity:1}} transition={{delay:i*0.03}}
                         className="border-b border-white/5 hover:bg-white/5 transition-colors">

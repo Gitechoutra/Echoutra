@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
   TrendingUp, TrendingDown, ArrowUpRight, ArrowDownLeft,
-  DollarSign, Download, RefreshCw, Search, Filter,
+  IndianRupee, Download, RefreshCw, Search, Filter,
   ChevronLeft, ChevronRight, X, AlertCircle, Receipt,
   Wallet, BarChart2, CheckCircle, Clock, XCircle,
 } from "lucide-react";
@@ -23,7 +23,7 @@ const authHdr  = () => ({
 const TYPE_CONFIG = {
   BUY:        { color: "text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/20", icon: TrendingUp,   label: "Buy"      },
   SELL:       { color: "text-red-400",     bg: "bg-red-500/10 border-red-500/20",         icon: TrendingDown, label: "Sell"     },
-  DIVIDEND:   { color: "text-amber-400",   bg: "bg-amber-500/10 border-amber-500/20",     icon: DollarSign,   label: "Dividend" },
+  DIVIDEND:   { color: "text-amber-400",   bg: "bg-amber-500/10 border-amber-500/20",     icon: IndianRupee,  label: "Dividend" },
   DEPOSIT:    { color: "text-cyan-400",    bg: "bg-cyan-500/10 border-cyan-500/20",       icon: ArrowDownLeft,label: "Deposit"  },
   WITHDRAWAL: { color: "text-orange-400",  bg: "bg-orange-500/10 border-orange-500/20",   icon: ArrowUpRight, label: "Withdraw" },
   FEE:        { color: "text-gray-400",    bg: "bg-gray-500/10 border-gray-500/20",       icon: Receipt,      label: "Fee"      },
@@ -246,7 +246,7 @@ export function UserTransactions() {
     {
       label:  "Dividends",
       value:  fmtAmt(summary?.total_dividends),
-      icon:   DollarSign,
+      icon:   IndianRupee,
       color:  "text-amber-400",
       border: "border-amber-500/15",
     },

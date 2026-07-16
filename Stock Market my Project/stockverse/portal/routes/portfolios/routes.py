@@ -236,9 +236,33 @@ class PortfolioPerformance(Resource):
             if portfolio.user_id != user_id and claims.get('role') != 'ADMIN':
                 return jsonify(bool=False, status=403, response={'message': 'Access denied.'})
 
-            args  = perf_parser.parse_args(strict=False)
+            args     = perf_parser.parse_args(strict=False)
+            interval = args['interval'].upper()
+
+            # INTRADAY reads the value ticks instead of the daily snapshots. A
+            # portfolio only gets one snapshot per day, so on its first day the
+            # DAILY series is a single point with no shape — the ticks carry the
+            # real within-day movement.
+            if interval == 'INTRADAY':
+                from portal.models.portfolio_value_ticks import PortfolioValueTicks
+                ticks = (PortfolioValueTicks.query
+                         .filter_by(portfolio_id=portfolio_id)
+                         .order_by(PortfolioValueTicks.captured_at.desc())
+                         .limit(min(500, max(1, args['limit']))).all())
+                ticks.reverse()   # oldest → newest for charting
+                return jsonify(bool=True, status=200, response={
+                    'portfolio_id': portfolio_id,
+                    'interval':     'INTRADAY',
+                    'count':        len(ticks),
+                    'data': [{
+                        'date':           t.captured_at.isoformat(),
+                        'total_value':    float(t.total_value),
+                        'total_invested': float(t.total_invested),
+                    } for t in ticks],
+                })
+
             query = PortfolioPerformanceHistory.query.filter_by(
-                portfolio_id=portfolio_id, interval=args['interval'].upper()
+                portfolio_id=portfolio_id, interval=interval
             )
             if args.get('from_date'):
                 from datetime import date

@@ -23,6 +23,7 @@ prefs_parser.add_argument('push_price_alerts',    type=bool, required=False, loc
 prefs_parser.add_argument('push_order_updates',   type=bool, required=False, location='json')
 prefs_parser.add_argument('push_news_alerts',     type=bool, required=False, location='json')
 prefs_parser.add_argument('push_security',        type=bool, required=False, location='json')
+prefs_parser.add_argument('push_account',         type=bool, required=False, location='json')
 prefs_parser.add_argument('push_marketing',       type=bool, required=False, location='json')
 prefs_parser.add_argument('email_enabled',        type=bool, required=False, location='json')
 prefs_parser.add_argument('email_price_alerts',   type=bool, required=False, location='json')
@@ -30,6 +31,7 @@ prefs_parser.add_argument('email_order_updates',  type=bool, required=False, loc
 prefs_parser.add_argument('email_news_digest',    type=bool, required=False, location='json')
 prefs_parser.add_argument('email_news_digest_frequency', type=str, required=False, location='json')
 prefs_parser.add_argument('email_security',       type=bool, required=False, location='json')
+prefs_parser.add_argument('email_account',        type=bool, required=False, location='json')
 prefs_parser.add_argument('email_marketing',      type=bool, required=False, location='json')
 prefs_parser.add_argument('sms_enabled',          type=bool, required=False, location='json')
 prefs_parser.add_argument('sms_security',         type=bool, required=False, location='json')
@@ -213,6 +215,7 @@ class NotificationPrefs(Resource):
                 'push_order_updates':          prefs.push_order_updates,
                 'push_news_alerts':            prefs.push_news_alerts,
                 'push_security':               prefs.push_security,
+                'push_account':                prefs.push_account,
                 'push_marketing':              prefs.push_marketing,
                 'email_enabled':               prefs.email_enabled,
                 'email_price_alerts':          prefs.email_price_alerts,
@@ -220,6 +223,7 @@ class NotificationPrefs(Resource):
                 'email_news_digest':           prefs.email_news_digest,
                 'email_news_digest_frequency': prefs.email_news_digest_frequency,
                 'email_security':              prefs.email_security,
+                'email_account':               prefs.email_account,
                 'email_marketing':             prefs.email_marketing,
                 'sms_enabled':                 prefs.sms_enabled,
                 'sms_security':                prefs.sms_security,
@@ -246,9 +250,9 @@ class NotificationPrefs(Resource):
             args   = prefs_parser.parse_args(strict=False)
             fields = [
                 'push_enabled','push_price_alerts','push_order_updates','push_news_alerts',
-                'push_security','push_marketing',
+                'push_security','push_account','push_marketing',
                 'email_enabled','email_price_alerts','email_order_updates','email_news_digest',
-                'email_news_digest_frequency','email_security','email_marketing',
+                'email_news_digest_frequency','email_security','email_account','email_marketing',
                 'sms_enabled','sms_security',
                 'quiet_hours_enabled',
             ]

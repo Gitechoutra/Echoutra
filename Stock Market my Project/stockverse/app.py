@@ -50,6 +50,69 @@ def _ensure_schema():
         app.logger.info("[schema] dropped portfolio_holdings.uq_portfolio_stock")
 
 
+def _ensure_currency_inr():
+    """Normalise legacy USD rows to INR.
+
+    The platform trades exclusively in Indian Rupees; every model now defaults to
+    'INR'. Rows created before that change still carry 'USD' and would render with
+    a '$' symbol in the admin finance/analytics pages. This rewrites those rows and
+    the PLATFORM_DEFAULT_CURRENCY setting. Idempotent — a no-op once converted.
+
+    NOTE: only the currency *label* is corrected. The stored amounts are untouched,
+    because these rows were always rupee amounts mislabelled as USD; no FX
+    conversion is applied (and none would be correct here).
+    """
+    from sqlalchemy import text
+
+    tables = [
+        'stocks', 'wallets', 'transactions', 'wallet_transactions',
+        'subscription_plans', 'user_subscriptions', 'platform_revenue',
+        'billing_transactions',
+    ]
+    for table in tables:
+        try:
+            res = db.session.execute(text(
+                f"UPDATE {table} SET currency = 'INR' WHERE currency <> 'INR' OR currency IS NULL"
+            ))
+            if res.rowcount:
+                db.session.commit()
+                app.logger.info(f"[currency] {table}: {res.rowcount} row(s) -> INR")
+            else:
+                db.session.rollback()
+        except Exception as e:
+            db.session.rollback()
+            app.logger.debug(f"[currency] skipped {table} ({e})")
+
+    try:
+        res = db.session.execute(text(
+            "UPDATE user_profiles SET currency_preference = 'INR' "
+            "WHERE currency_preference <> 'INR' OR currency_preference IS NULL"
+        ))
+        if res.rowcount:
+            db.session.commit()
+            app.logger.info(f"[currency] user_profiles: {res.rowcount} row(s) -> INR")
+        else:
+            db.session.rollback()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.debug(f"[currency] skipped user_profiles ({e})")
+
+    # The seeder only inserts missing keys, so an existing 'USD' row needs this.
+    try:
+        res = db.session.execute(text(
+            "UPDATE admin_settings SET setting_value = 'INR', default_value = 'INR' "
+            "WHERE setting_key = 'PLATFORM_DEFAULT_CURRENCY' AND setting_value <> 'INR'"
+        ))
+        if res.rowcount:
+            db.session.commit()
+            app.logger.info("[currency] PLATFORM_DEFAULT_CURRENCY -> INR")
+        else:
+            db.session.rollback()
+    except Exception as e:
+        db.session.rollback()
+        app.logger.debug(f"[currency] skipped admin_settings ({e})")
+
+
 # Create Tables and Run Seeders
 with app.app_context():
 
@@ -61,6 +124,12 @@ with app.app_context():
         _ensure_schema()
     except Exception as e:
         app.logger.error(f"Schema patch failed: {e}")
+
+    # Convert any legacy USD-labelled rows to INR.
+    try:
+        _ensure_currency_inr()
+    except Exception as e:
+        app.logger.error(f"Currency normalisation failed: {e}")
 
     from portal.seeders import run_all_seeders
 

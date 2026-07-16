@@ -23,6 +23,74 @@ const DOC_TYPES = [
   { value: "DRIVERS_LICENSE", label: "Driver's License" },
 ];
 
+/* ── Why Add Money is blocked, per KYC status ───────────────────────────────── */
+const KYC_DEPOSIT_MESSAGE = {
+  NOT_STARTED:  "Complete your KYC verification before adding money to your wallet.",
+  PENDING:      "Your KYC is pending admin approval. You can add money once it's approved.",
+  UNDER_REVIEW: "Your KYC is under review. You can add money once it's approved.",
+  REJECTED:     "Your KYC was rejected. Please re-submit your documents to add money.",
+  EXPIRED:      "Your KYC has expired. Please re-verify to add money.",
+};
+
+/* ── Notification preferences ───────────────────────────────────────────────────
+   Only real, user-facing switches are listed. The API also returns `pref_id`,
+   `updated_on`, `quiet_hours_start/end` and `email_news_digest_frequency` — those
+   are ids, timestamps, times and a string, NOT booleans. The page used to render
+   every key blindly as a toggle, which produced nonsense rows ("Pref Id",
+   "Updated On") and would POST garbage like `pref_id: false`. Each entry below maps
+   to a notification the platform actually sends.                                */
+const NOTIF_GROUPS = [
+  {
+    title: "Trading",
+    blurb: "Order fills and price alerts",
+    items: [
+      { key: "push_order_updates",  label: "Order updates",     hint: "In-app alert when an order fills" },
+      { key: "email_order_updates", label: "Order updates",     hint: "Email when an order fills" },
+      { key: "push_price_alerts",   label: "Price alerts",      hint: "In-app alert when a price target is hit" },
+      { key: "email_price_alerts",  label: "Price alerts",      hint: "Email when a price target is hit" },
+    ],
+  },
+  {
+    title: "Account & KYC",
+    blurb: "Verification results and account status",
+    items: [
+      { key: "push_account",  label: "Account & KYC updates", hint: "In-app alert for KYC and account changes" },
+      { key: "email_account", label: "Account & KYC updates", hint: "Email for KYC and account changes" },
+    ],
+  },
+  {
+    title: "News",
+    blurb: "Market news and new listings",
+    items: [
+      { key: "push_news_alerts",  label: "News alerts",   hint: "In-app alert for market news and new listings" },
+      { key: "email_news_digest", label: "News digest",   hint: "Periodic email summary of market news" },
+    ],
+  },
+  {
+    title: "Channels",
+    blurb: "Master switches — turning one off silences that channel",
+    items: [
+      { key: "push_enabled",  label: "In-app notifications", hint: "The notification bell" },
+      { key: "email_enabled", label: "Email notifications",  hint: "All emails except security" },
+    ],
+  },
+];
+
+/* Security alerts are intentionally not listed: password changes and account
+   security events must always reach the user and cannot be switched off. */
+
+/* ── Payout method options ──────────────────────────────────────────────────── */
+const PAYOUT_TYPES = [
+  { value: "UPI",          label: "UPI App",      icon: Smartphone, note: "Instant • No charges" },
+  { value: "BANK_ACCOUNT", label: "Bank Account", icon: Building,   note: "1–2 working days" },
+  { value: "NET_BANKING",  label: "Net Banking",  icon: Globe,      note: "Net banking charges may apply" },
+];
+
+const BLANK_PAYOUT_FORM = {
+  method_type: "UPI", label: "", upi_id: "",
+  account_holder: "", bank_name: "", account_number: "", ifsc: "",
+};
+
 const tabs = [
   { id: "profile",  label: "Profile",          icon: User },
   { id: "notifs",   label: "Notifications",    icon: Bell },
@@ -138,6 +206,9 @@ export function UserSettings() {
     setKycForm(p => ({ ...p, [field]: value }));
   }, []);
 
+  /* Profile picture */
+  const [avatarSaving,       setAvatarSaving]       = useState(false);
+
   /* ── Wallet ──────────────────────────────────────────────────────────────── */
   const [wallet,             setWallet]             = useState(null);
   const [walletTransactions, setWalletTransactions] = useState([]);
@@ -152,17 +223,23 @@ export function UserSettings() {
   const [showWithdrawModal,  setShowWithdrawModal]  = useState(false);
   const [withdrawAmount,     setWithdrawAmount]     = useState("");
   const [withdrawLoading,    setWithdrawLoading]    = useState(false);
+  const [withdrawMethodId,   setWithdrawMethodId]   = useState("");
 
   /* Transfer to Bank modal */
   const [showTransferModal,  setShowTransferModal]  = useState(false);
   const [transferAmount,     setTransferAmount]     = useState("");
   const [transferLoading,    setTransferLoading]    = useState(false);
+  const [transferMethodId,   setTransferMethodId]   = useState("");
 
-  const linkedMethods = [
-    { id: "bank", type: "Bank Account", name: "HDFC Bank Savings A/C", detail: "A/C: *******1234", isPrimary: true },
-    { id: "upi",  type: "UPI ID",       name: "john@okhdfcbank",        detail: "UPI ID",           isPrimary: false },
-    { id: "card", type: "Card",         name: "Visa Debit Card",        detail: "Card: **** 4444",  isPrimary: false },
-  ];
+  /* Payout methods — user-managed withdrawal destinations */
+  const [payoutMethods,      setPayoutMethods]      = useState([]);
+  const [showAddPayoutModal, setShowAddPayoutModal] = useState(false);
+  const [payoutSaving,       setPayoutSaving]       = useState(false);
+  const [payoutForm,         setPayoutForm]         = useState(BLANK_PAYOUT_FORM);
+
+  const bankMethods = payoutMethods.filter(
+    (m) => m.method_type === "BANK_ACCOUNT" || m.method_type === "NET_BANKING"
+  );
 
   /* ═══════════════════════════════════════════════════════════
      DATA LOADERS
@@ -192,7 +269,7 @@ export function UserSettings() {
       // Start with defaults
       let merged = {
         first_name: "", last_name: "", email: "",
-        phone: "", bio: "", location: "",
+        phone: "", bio: "", location: "", avatar_url: "",
       };
 
       // Get email from Users table (/authentication/me)
@@ -210,6 +287,7 @@ export function UserSettings() {
         merged.bio        = r.bio || "";
         // country is the actual column name in UserProfiles (no 'location' column)
         merged.location   = r.country || r.city || "";
+        merged.avatar_url = r.avatar_url || "";
       }
 
       setProfile(merged);
@@ -261,6 +339,12 @@ export function UserSettings() {
     if (data.bool) setWalletTransactions(data.response?.transactions || (Array.isArray(data.response) ? data.response : []));
   }, []);
 
+  const fetchPayoutMethods = useCallback(async () => {
+    const res  = await fetch(`${API_BASE}/wallets/payout_methods`, { headers: authHdr() });
+    const data = await res.json();
+    if (data.bool) setPayoutMethods(data.response?.payout_methods || []);
+  }, []);
+
   useEffect(() => {
     const load = async () => {
       setLoading(true);
@@ -269,7 +353,7 @@ export function UserSettings() {
         if (active === "notifs")   await fetchPreferences();
         if (active === "security") { await fetchSecurityInfo(); await fetchSessions(); }
         if (active === "kyc")      await fetchKycStatus();
-        if (active === "wallet")   { await fetchWallet(); await fetchWalletTransactions(); }
+        if (active === "wallet")   { await fetchWallet(); await fetchWalletTransactions(); await fetchPayoutMethods(); }
       } catch (err) { console.error("Settings load error:", err); }
       finally { setLoading(false); }
     };
@@ -292,15 +376,85 @@ export function UserSettings() {
         }),
       });
       const data = await res.json();
-      if (data.bool) showToast("Profile saved successfully.");
-      else showToast(data.response?.message || "Failed to save.", false);
+      if (data.bool) {
+        // Name changes feed the sidebar/header too.
+        window.dispatchEvent(new CustomEvent("profile-updated"));
+        showToast("Profile saved successfully.");
+      } else showToast(data.response?.message || "Failed to save.", false);
     } catch { showToast("Network error.", false); }
+  };
+
+  /* ── Profile picture ───────────────────────────────────────────────────────
+     `avatar_url` is a TEXT column, so the image is stored as a base64 data URI —
+     no upload endpoint or object storage is involved. Downscaled to 256px JPEG
+     because this value travels in every profile response.                      */
+  const AVATAR_MAX_BYTES = 5 * 1024 * 1024;
+  const AVATAR_MAX_DIM   = 256;
+
+  const resizeToDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read that file."));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("That file isn't a valid image."));
+      img.onload = () => {
+        // Square, centre-cropped — the avatar always renders in a square.
+        const side = Math.min(img.width, img.height);
+        const sx   = (img.width  - side) / 2;
+        const sy   = (img.height - side) / 2;
+        const canvas  = document.createElement("canvas");
+        canvas.width  = AVATAR_MAX_DIM;
+        canvas.height = AVATAR_MAX_DIM;
+        canvas.getContext("2d").drawImage(img, sx, sy, side, side, 0, 0, AVATAR_MAX_DIM, AVATAR_MAX_DIM);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const saveAvatar = async (dataUrl, successMsg) => {
+    setAvatarSaving(true);
+    try {
+      const res  = await fetch(`${API_BASE}/user_profiles/me`, {
+        method: "PUT", headers: jsonHdr(), body: JSON.stringify({ avatar_url: dataUrl }),
+      });
+      const data = await res.json();
+      if (data.bool) {
+        setProfile((p) => ({ ...p, avatar_url: dataUrl }));
+        // Tell UserLayout to re-read the profile so the sidebar + header
+        // avatars update immediately instead of on the next full page load.
+        window.dispatchEvent(new CustomEvent("profile-updated"));
+        showToast(successMsg);
+      } else showToast(data.response?.message || "Failed to save picture.", false);
+    } catch { showToast("Network error.", false); }
+    finally { setAvatarSaving(false); }
+  };
+
+  const handleAvatarSelect = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";                     // allow re-picking the same file
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { showToast("Please choose an image file (PNG, JPG, WebP).", false); return; }
+    if (file.size > AVATAR_MAX_BYTES)    { showToast("Image must be under 5 MB.", false); return; }
+    try {
+      const dataUrl = await resizeToDataUrl(file);
+      await saveAvatar(dataUrl, "Profile picture updated.");
+    } catch (err) {
+      showToast(err.message || "Could not process that image.", false);
+    }
   };
 
   const handlePreferencesSave = async () => {
     try {
+      // Send only the switches this page owns — never echo back `pref_id`,
+      // `updated_on` or the time/string fields the UI doesn't manage.
+      const payload = {};
+      NOTIF_GROUPS.forEach((g) => g.items.forEach(({ key }) => {
+        payload[key] = !!notifPrefs[key];
+      }));
       const res  = await fetch(`${API_BASE}/notifications/preferences`, {
-        method: "PUT", headers: jsonHdr(), body: JSON.stringify(notifPrefs),
+        method: "PUT", headers: jsonHdr(), body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (data.bool) showToast("Notification preferences saved.");
@@ -446,6 +600,23 @@ export function UserSettings() {
     e.preventDefault();
     const amount = parseFloat(addAmount);
     if (isNaN(amount) || amount < 1) { showToast("Enter a valid amount (min ₹1)", false); return; }
+
+    /* Enforce KYC, the admin's deposit cap and wallet status BEFORE opening Razorpay.
+       The server re-checks all three, but rejecting only afterwards would mean the
+       user is charged and then refused — money taken with nothing credited. */
+    if (wallet?.kyc_status && wallet.kyc_status !== "APPROVED") {
+      showToast(KYC_DEPOSIT_MESSAGE[wallet.kyc_status] || "KYC verification is required before adding money.", false);
+      return;
+    }
+    if (wallet?.status && wallet.status !== "ACTIVE") {
+      showToast(`Your wallet is ${wallet.status.toLowerCase()}. You cannot add money — please contact support.`, false);
+      return;
+    }
+    const maxDeposit = parseFloat(wallet?.max_single_deposit || 0);
+    if (maxDeposit > 0 && amount > maxDeposit) {
+      showToast(`Single deposit limit is ₹${maxDeposit.toLocaleString("en-IN")}. Enter ₹${maxDeposit.toLocaleString("en-IN")} or less.`, false);
+      return;
+    }
 
     setAddLoading(true);
     setAddStep("processing");
@@ -617,46 +788,119 @@ export function UserSettings() {
   };
 
   /* ── Withdraw ──────────────────────────────────────────────────────────── */
-  const handleWithdraw = async (e) => {
-    e.preventDefault();
-    const amount = parseFloat(withdrawAmount);
-    if (isNaN(amount) || amount <= 0) { showToast("Enter a valid amount.", false); return; }
-    setWithdrawLoading(true);
+  /**
+   * Posts to /wallets/withdraw with the chosen payout method. The payout is
+   * SIMULATED server-side — the wallet debits and the transaction is recorded, but
+   * no money reaches the bank/UPI until RazorpayX Payouts is integrated.
+   */
+  const submitWithdrawal = async ({ amount, methodId, onDone, setLoading, successVerb }) => {
+    const value = parseFloat(amount);
+    if (isNaN(value) || value <= 0) { showToast("Enter a valid amount.", false); return; }
+    if (!methodId)                  { showToast("Select where to withdraw to.", false); return; }
+    setLoading(true);
     try {
       const res  = await fetch(`${API_BASE}/wallets/withdraw`, {
         method: "POST", headers: jsonHdr(),
-        body: JSON.stringify({ amount, payment_method: "BANK_TRANSFER" }),
+        body: JSON.stringify({ amount: value, payout_method_id: Number(methodId) }),
       });
       const data = await res.json();
       if (data.bool) {
         await fetchWallet(); await fetchWalletTransactions();
-        setShowWithdrawModal(false); setWithdrawAmount("");
-        showToast(`₹${amount.toFixed(2)} withdrawal initiated.`);
+        onDone();
+        const net = parseFloat(data.response?.net_amount ?? value);
+        showToast(`₹${net.toFixed(2)} ${successVerb} ${data.response?.payout_method?.display_name || "your account"}.`);
       } else showToast(data.response?.message || "Withdrawal failed.", false);
     } catch { showToast("Network error.", false); }
-    finally { setWithdrawLoading(false); }
+    finally { setLoading(false); }
+  };
+
+  const handleWithdraw = (e) => {
+    e.preventDefault();
+    return submitWithdrawal({
+      amount: withdrawAmount, methodId: withdrawMethodId,
+      setLoading: setWithdrawLoading, successVerb: "sent to",
+      onDone: () => { setShowWithdrawModal(false); setWithdrawAmount(""); },
+    });
   };
 
   /* ── Transfer to Bank ──────────────────────────────────────────────────── */
-  const handleTransfer = async (e) => {
+  const handleTransfer = (e) => {
     e.preventDefault();
-    const amount = parseFloat(transferAmount);
-    if (isNaN(amount) || amount <= 0) { showToast("Enter a valid amount.", false); return; }
-    setTransferLoading(true);
+    return submitWithdrawal({
+      amount: transferAmount, methodId: transferMethodId,
+      setLoading: setTransferLoading, successVerb: "transferred to",
+      onDone: () => { setShowTransferModal(false); setTransferAmount(""); },
+    });
+  };
+
+  /* ── Payout methods ────────────────────────────────────────────────────── */
+  const handleAddPayoutMethod = async (e) => {
+    e.preventDefault();
+    setPayoutSaving(true);
     try {
-      const res  = await fetch(`${API_BASE}/wallets/withdraw`, {
-        method: "POST", headers: jsonHdr(),
-        body: JSON.stringify({ amount, payment_method: "BANK_TRANSFER" }),
+      const res  = await fetch(`${API_BASE}/wallets/payout_methods`, {
+        method: "POST", headers: jsonHdr(), body: JSON.stringify(payoutForm),
       });
       const data = await res.json();
       if (data.bool) {
-        await fetchWallet(); await fetchWalletTransactions();
-        setShowTransferModal(false); setTransferAmount("");
-        showToast(`₹${amount.toFixed(2)} transferred to bank.`);
-      } else showToast(data.response?.message || "Transfer failed.", false);
+        await fetchPayoutMethods();
+        setShowAddPayoutModal(false); setPayoutForm(BLANK_PAYOUT_FORM);
+        showToast("Payout method added.");
+      } else showToast(data.response?.message || "Could not add payout method.", false);
     } catch { showToast("Network error.", false); }
-    finally { setTransferLoading(false); }
+    finally { setPayoutSaving(false); }
   };
+
+  const handleRemovePayoutMethod = async (id) => {
+    try {
+      const res  = await fetch(`${API_BASE}/wallets/payout_methods/${id}`, {
+        method: "DELETE", headers: authHdr(),
+      });
+      const data = await res.json();
+      if (data.bool) { await fetchPayoutMethods(); showToast("Payout method removed."); }
+      else showToast(data.response?.message || "Could not remove method.", false);
+    } catch { showToast("Network error.", false); }
+  };
+
+  const handleSetPrimaryPayoutMethod = async (id) => {
+    try {
+      const res  = await fetch(`${API_BASE}/wallets/payout_methods/${id}/primary`, {
+        method: "POST", headers: authHdr(),
+      });
+      const data = await res.json();
+      if (data.bool) { await fetchPayoutMethods(); showToast("Default withdrawal account updated."); }
+      else showToast(data.response?.message || "Could not update default.", false);
+    } catch { showToast("Network error.", false); }
+  };
+
+  /* Fee breakdown comes from the server so the modal can never disagree with what
+     is actually charged. Debounced because it fires on every keystroke. */
+  const [quote, setQuote] = useState(null);
+
+  const activeQuoteInput = showTransferModal
+    ? { amount: transferAmount, methodId: transferMethodId }
+    : { amount: withdrawAmount, methodId: withdrawMethodId };
+
+  useEffect(() => {
+    const { amount, methodId } = activeQuoteInput;
+    const value = parseFloat(amount);
+    if (!(showWithdrawModal || showTransferModal) || isNaN(value) || value <= 0 || !methodId) {
+      setQuote(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      try {
+        const res  = await fetch(`${API_BASE}/wallets/withdraw/quote`, {
+          method: "POST", headers: jsonHdr(),
+          body: JSON.stringify({ amount: value, payout_method_id: Number(methodId) }),
+        });
+        const data = await res.json();
+        if (!cancelled) setQuote(data.bool ? data.response : null);
+      } catch { if (!cancelled) setQuote(null); }
+    }, 300);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [activeQuoteInput.amount, activeQuoteInput.methodId, showWithdrawModal, showTransferModal]);
 
   /* ── UI Helpers ────────────────────────────────────────────────────────── */
   const Toggle = ({ v, onToggle }) => (
@@ -727,19 +971,42 @@ export function UserSettings() {
                     <div className="text-sm font-medium text-white mb-5">Profile Information</div>
                     <div className="flex items-center gap-4 mb-5">
                       <div className="relative">
-                        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xl font-bold text-white shadow-lg">
-                          {(profile.first_name || "U").slice(0, 2).toUpperCase()}
-                        </div>
-                        <button className="absolute -bottom-1 -right-1 w-6 h-6 bg-cyan-500 rounded-full flex items-center justify-center cursor-pointer border border-[#0C1220]">
+                        {profile.avatar_url ? (
+                          <img src={profile.avatar_url} alt="Profile"
+                            className="w-16 h-16 rounded-2xl object-cover shadow-lg border border-white/10" />
+                        ) : (
+                          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xl font-bold text-white shadow-lg">
+                            {(profile.first_name || "U").slice(0, 2).toUpperCase()}
+                          </div>
+                        )}
+                        {avatarSaving && (
+                          <div className="absolute inset-0 rounded-2xl bg-black/60 flex items-center justify-center">
+                            <Loader2 className="w-5 h-5 text-cyan-400 animate-spin" />
+                          </div>
+                        )}
+                        {/* The camera button used to be inert — it now opens the picker. */}
+                        <label
+                          title="Change profile picture"
+                          className="absolute -bottom-1 -right-1 w-6 h-6 bg-cyan-500 rounded-full flex items-center justify-center cursor-pointer border border-[#0C1220] hover:bg-cyan-400">
                           <Camera className="w-3 h-3 text-white" />
-                        </button>
+                          <input type="file" accept="image/*" className="hidden"
+                            disabled={avatarSaving} onChange={handleAvatarSelect} />
+                        </label>
                       </div>
                       <div>
                         <div className="text-sm font-medium text-white">{profile.first_name} {profile.last_name}</div>
                         <div className="text-xs text-gray-500 mb-1">{profile.email}</div>
-                        <span className="px-2.5 py-0.5 bg-cyan-500/10 border border-cyan-500/15 rounded-full text-[10px] text-cyan-400 font-medium">
-                          Member
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="px-2.5 py-0.5 bg-cyan-500/10 border border-cyan-500/15 rounded-full text-[10px] text-cyan-400 font-medium">
+                            Member
+                          </span>
+                          {profile.avatar_url && (
+                            <button onClick={() => saveAvatar("", "Profile picture removed.")} disabled={avatarSaving}
+                              className="text-[10px] text-gray-500 hover:text-red-400 cursor-pointer disabled:opacity-50">
+                              Remove photo
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                     <div className="grid sm:grid-cols-2 gap-4">
@@ -779,17 +1046,46 @@ export function UserSettings() {
 
               {/* ─── NOTIFICATIONS ─── */}
               {active === "notifs" && (
-                <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }}>
-                  <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
-                    <div className="px-5 py-4 border-b border-white/5 text-sm font-medium text-white">Notification Preferences</div>
-                    {Object.entries(notifPrefs).map(([key, value]) => (
-                      <div key={key} className="flex items-center justify-between px-5 py-3.5 border-b border-white/5 last:border-0">
-                        <div className="text-sm text-white capitalize">{key.replace(/_/g, " ")}</div>
-                        <Toggle v={value} onToggle={() => setNotifPrefs(prev => ({ ...prev, [key]: !prev[key] }))} />
+                <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} className="space-y-4">
+                  {NOTIF_GROUPS.map((group) => (
+                    <div key={group.title} className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
+                      <div className="px-5 py-4 border-b border-white/5">
+                        <div className="text-sm font-medium text-white">{group.title}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">{group.blurb}</div>
                       </div>
-                    ))}
+                      {group.items.map(({ key, label, hint }) => {
+                        const isEmail  = key.startsWith("email_");
+                        const isSms    = key.startsWith("sms_");
+                        const channel  = isEmail ? "Email" : isSms ? "SMS" : "In-app";
+                        // A master switch off greys out the rows it silences.
+                        const muted    = (isEmail && notifPrefs.email_enabled === false && key !== "email_enabled")
+                                      || (!isEmail && !isSms && notifPrefs.push_enabled === false && key !== "push_enabled");
+                        return (
+                          <div key={key} className={`flex items-center justify-between px-5 py-3.5 border-b border-white/5 last:border-0 ${muted ? "opacity-40" : ""}`}>
+                            <div className="min-w-0 pr-3">
+                              <div className="text-sm text-white flex items-center gap-2">
+                                {label}
+                                {group.title !== "Channels" && (
+                                  <span className="text-[9px] font-bold text-gray-500 bg-white/5 border border-white/8 rounded px-1.5 py-0.5 shrink-0">
+                                    {channel.toUpperCase()}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-600 mt-0.5">{hint}</div>
+                            </div>
+                            <Toggle v={!!notifPrefs[key]} onToggle={() => setNotifPrefs(prev => ({ ...prev, [key]: !prev[key] }))} />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+
+                  <div className="flex items-start gap-2.5 px-3 py-2.5 bg-cyan-500/8 border border-cyan-500/15 rounded-xl text-xs text-cyan-300">
+                    <Shield className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+                    Security alerts (password changes, suspicious activity) are always sent and can't be turned off.
                   </div>
-                  <button onClick={handlePreferencesSave} className="mt-4 px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-sm font-medium hover:opacity-90 cursor-pointer">
+
+                  <button onClick={handlePreferencesSave} className="px-5 py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-sm font-medium hover:opacity-90 cursor-pointer">
                     Save Preferences
                   </button>
                 </motion.div>
@@ -924,15 +1220,80 @@ export function UserSettings() {
                             className="py-2 px-4 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer">
                             <PlusCircle className="w-3.5 h-3.5" />Add Money
                           </button>
-                          <button onClick={() => { setWithdrawAmount(""); setShowWithdrawModal(true); }}
+                          <button onClick={() => {
+                              setWithdrawAmount("");
+                              const primary = payoutMethods.find((m) => m.is_primary) || payoutMethods[0];
+                              setWithdrawMethodId(primary ? String(primary.payout_method_id) : "");
+                              setShowWithdrawModal(true);
+                            }}
                             className="py-2 px-4 bg-[#141C30] border border-white/8 rounded-xl text-xs font-bold text-gray-300 flex items-center gap-1.5 cursor-pointer">
                             <ArrowUpRight className="w-3.5 h-3.5" />Withdraw
                           </button>
-                          <button onClick={() => { setTransferAmount(""); setShowTransferModal(true); }}
+                          <button onClick={() => {
+                              setTransferAmount("");
+                              const primary = bankMethods.find((m) => m.is_primary) || bankMethods[0];
+                              setTransferMethodId(primary ? String(primary.payout_method_id) : "");
+                              setShowTransferModal(true);
+                            }}
                             className="py-2 px-4 bg-[#141C30] border border-white/8 rounded-xl text-xs font-bold text-gray-300 flex items-center gap-1.5 cursor-pointer">
                             <Building className="w-3.5 h-3.5" />Transfer to Bank
                           </button>
                         </div>
+                      </div>
+
+                      {/* ─── Withdrawal methods ─── */}
+                      <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
+                        <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
+                          <div>
+                            <div className="text-sm font-medium text-white">Withdrawal Methods</div>
+                            <div className="text-xs text-gray-500 mt-0.5">Where your money goes when you withdraw</div>
+                          </div>
+                          <button onClick={() => { setPayoutForm(BLANK_PAYOUT_FORM); setShowAddPayoutModal(true); }}
+                            className="py-1.5 px-3 bg-[#141C30] border border-white/8 rounded-lg text-[11px] font-bold text-cyan-400 flex items-center gap-1 cursor-pointer">
+                            <Plus className="w-3 h-3" />Add
+                          </button>
+                        </div>
+                        {payoutMethods.length === 0 ? (
+                          <div className="py-8 px-5 text-center">
+                            <div className="text-xs text-gray-500">No withdrawal methods yet</div>
+                            <div className="text-[11px] text-gray-600 mt-1">Add a UPI ID or bank account to withdraw your balance</div>
+                          </div>
+                        ) : payoutMethods.map((m) => {
+                          const meta = PAYOUT_TYPES.find((t) => t.value === m.method_type);
+                          const Icon = meta?.icon || Building;
+                          return (
+                            <div key={m.payout_method_id} className="flex items-center justify-between px-5 py-3.5 border-b border-white/5 last:border-0">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-8 h-8 rounded-lg bg-[#141C30] border border-white/5 flex items-center justify-center shrink-0">
+                                  <Icon className="w-4 h-4 text-cyan-400" />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-sm font-semibold text-white flex items-center gap-2">
+                                    <span className="truncate">{m.display_name}</span>
+                                    {m.is_primary && (
+                                      <span className="text-[9px] font-bold text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 rounded px-1.5 py-0.5 shrink-0">DEFAULT</span>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-gray-500 mt-0.5 truncate">
+                                    {meta?.label}{m.display_detail ? ` • ${m.display_detail}` : ""}
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 shrink-0">
+                                {!m.is_primary && (
+                                  <button onClick={() => handleSetPrimaryPayoutMethod(m.payout_method_id)}
+                                    className="px-2.5 py-1 text-[10px] font-bold text-gray-400 hover:text-cyan-400 bg-[#141C30] border border-white/8 rounded-lg cursor-pointer">
+                                    Set default
+                                  </button>
+                                )}
+                                <button onClick={() => handleRemovePayoutMethod(m.payout_method_id)}
+                                  className="p-1.5 text-red-400/70 hover:text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg cursor-pointer">
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
 
                       <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
@@ -1142,9 +1503,18 @@ export function UserSettings() {
                   </div>
                   <div>
                     <label className="text-xs text-gray-500 mb-1.5 block">Amount (₹)</label>
-                    <input type="number" step="1" min="1" placeholder="Enter amount" required value={addAmount}
+                    <input type="number" step="1" min="1" max={wallet?.max_single_deposit || undefined}
+                      placeholder="Enter amount" required value={addAmount}
                       onChange={(e) => setAddAmount(e.target.value)}
                       className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                    {wallet?.max_single_deposit > 0 && (
+                      <div className={`text-[11px] mt-1.5 ${
+                        parseFloat(addAmount) > wallet.max_single_deposit ? "text-red-400" : "text-gray-600"}`}>
+                        {parseFloat(addAmount) > wallet.max_single_deposit
+                          ? `Over the ₹${Number(wallet.max_single_deposit).toLocaleString("en-IN")} single-deposit limit set by the admin.`
+                          : `Single deposit limit: ₹${Number(wallet.max_single_deposit).toLocaleString("en-IN")}`}
+                      </div>
+                    )}
                   </div>
                   {/* Quick amount pills */}
                   <div className="flex gap-2">
@@ -1216,6 +1586,23 @@ export function UserSettings() {
                 <span className="text-gray-400">Available Balance</span>
                 <span className="font-bold text-cyan-400">₹{parseFloat(wallet?.available_balance || 0).toFixed(2)}</span>
               </div>
+              {payoutMethods.length === 0 ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    You haven't added a withdrawal destination yet. Add a UPI ID, bank account,
+                    or net banking account to withdraw your money.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <button type="button" onClick={() => setShowWithdrawModal(false)}
+                      className="py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-xs text-gray-400 hover:text-white cursor-pointer">Cancel</button>
+                    <button type="button"
+                      onClick={() => { setShowWithdrawModal(false); setPayoutForm(BLANK_PAYOUT_FORM); setShowAddPayoutModal(true); }}
+                      className="py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-semibold text-white hover:opacity-90 flex items-center justify-center gap-1.5 cursor-pointer">
+                      <Plus className="w-3.5 h-3.5" />Add Method
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <form onSubmit={handleWithdraw} className="space-y-4">
                 <div>
                   <label className="text-xs text-gray-500 mb-1.5 block">Amount (₹)</label>
@@ -1225,19 +1612,58 @@ export function UserSettings() {
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 mb-1.5 block">Withdraw to</label>
-                  <select className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-300 focus:outline-none">
-                    {linkedMethods.map(m => <option key={m.id} value={m.id}>{m.name} ({m.type})</option>)}
+                  <select required value={withdrawMethodId} onChange={(e) => setWithdrawMethodId(e.target.value)}
+                    className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-300 focus:outline-none focus:border-cyan-500/30">
+                    <option value="" disabled>Select a destination</option>
+                    {PAYOUT_TYPES.map((t) => {
+                      const group = payoutMethods.filter((m) => m.method_type === t.value);
+                      if (!group.length) return null;
+                      return (
+                        <optgroup key={t.value} label={t.label}>
+                          {group.map((m) => (
+                            <option key={m.payout_method_id} value={m.payout_method_id}>
+                              {m.display_name}{m.display_detail ? ` — ${m.display_detail}` : ""}
+                            </option>
+                          ))}
+                        </optgroup>
+                      );
+                    })}
                   </select>
+                  <button type="button"
+                    onClick={() => { setShowWithdrawModal(false); setPayoutForm(BLANK_PAYOUT_FORM); setShowAddPayoutModal(true); }}
+                    className="mt-2 text-[11px] text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer">
+                    <Plus className="w-3 h-3" />Add another method
+                  </button>
                 </div>
+
+                {quote && (
+                  <div className="bg-[#141C30] border border-white/5 rounded-lg p-2.5 space-y-1.5 text-xs">
+                    {quote.platform_fee > 0 && (
+                      <div className="flex justify-between text-gray-400">
+                        <span>Platform fee</span><span>−₹{quote.platform_fee.toFixed(2)}</span>
+                      </div>
+                    )}
+                    {quote.gateway_fee > 0 && (
+                      <div className="flex justify-between text-amber-400/90">
+                        <span>Net banking charge</span><span>−₹{quote.gateway_fee.toFixed(2)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between font-bold text-white pt-1 border-t border-white/5">
+                      <span>You receive</span><span className="text-emerald-400">₹{quote.net_amount.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <button type="button" onClick={() => setShowWithdrawModal(false)}
                     className="py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-xs text-gray-400 hover:text-white cursor-pointer">Cancel</button>
                   <button type="submit" disabled={withdrawLoading}
-                    className="py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-semibold text-white hover:opacity-90 flex items-center justify-center gap-1.5 cursor-pointer">
+                    className="py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-1.5 cursor-pointer">
                     {withdrawLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Processing...</> : "Withdraw Funds"}
                   </button>
                 </div>
               </form>
+              )}
             </motion.div>
           </div>
         )}
@@ -1254,6 +1680,22 @@ export function UserSettings() {
                 <span className="text-gray-400">Available Balance</span>
                 <span className="font-bold text-cyan-400">₹{parseFloat(wallet?.available_balance || 0).toFixed(2)}</span>
               </div>
+              {bankMethods.length === 0 ? (
+                <div className="space-y-3">
+                  <p className="text-xs text-gray-400 leading-relaxed">
+                    No bank account linked yet. Add a bank account or net banking method to transfer funds.
+                  </p>
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <button type="button" onClick={() => setShowTransferModal(false)}
+                      className="py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-xs text-gray-400 hover:text-white cursor-pointer">Cancel</button>
+                    <button type="button"
+                      onClick={() => { setShowTransferModal(false); setPayoutForm({ ...BLANK_PAYOUT_FORM, method_type: "BANK_ACCOUNT" }); setShowAddPayoutModal(true); }}
+                      className="py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-semibold text-white hover:opacity-90 flex items-center justify-center gap-1.5 cursor-pointer">
+                      <Plus className="w-3.5 h-3.5" />Add Bank
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <form onSubmit={handleTransfer} className="space-y-4">
                 <div>
                   <label className="text-xs text-gray-500 mb-1.5 block">Amount (₹)</label>
@@ -1263,18 +1705,132 @@ export function UserSettings() {
                 </div>
                 <div>
                   <label className="text-xs text-gray-500 mb-1.5 block">Target Bank Account</label>
-                  <select className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-300 focus:outline-none">
-                    {linkedMethods.filter(m => m.type === "Bank Account").map(m => (
-                      <option key={m.id} value={m.id}>{m.name}</option>
+                  <select required value={transferMethodId} onChange={(e) => setTransferMethodId(e.target.value)}
+                    className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-300 focus:outline-none focus:border-cyan-500/30">
+                    <option value="" disabled>Select a bank account</option>
+                    {bankMethods.map((m) => (
+                      <option key={m.payout_method_id} value={m.payout_method_id}>
+                        {m.display_name}{m.display_detail ? ` — ${m.display_detail}` : ""}
+                      </option>
                     ))}
                   </select>
                 </div>
+
+                {quote && (
+                  <div className="bg-[#141C30] border border-white/5 rounded-lg p-2.5 space-y-1.5 text-xs">
+                    {quote.platform_fee > 0 && (
+                      <div className="flex justify-between text-gray-400">
+                        <span>Platform fee</span><span>−₹{quote.platform_fee.toFixed(2)}</span>
+                      </div>
+                    )}
+                    {quote.gateway_fee > 0 && (
+                      <div className="flex justify-between text-amber-400/90">
+                        <span>Net banking charge</span><span>−₹{quote.gateway_fee.toFixed(2)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between font-bold text-white pt-1 border-t border-white/5">
+                      <span>You receive</span><span className="text-emerald-400">₹{quote.net_amount.toFixed(2)}</span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-3 pt-2">
                   <button type="button" onClick={() => setShowTransferModal(false)}
                     className="py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-xs text-gray-400 hover:text-white cursor-pointer">Cancel</button>
                   <button type="submit" disabled={transferLoading}
-                    className="py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-semibold text-white hover:opacity-90 flex items-center justify-center gap-1.5 cursor-pointer">
+                    className="py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-1.5 cursor-pointer">
                     {transferLoading ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Processing...</> : "Confirm Transfer"}
+                  </button>
+                </div>
+              </form>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* ═══ ADD PAYOUT METHOD MODAL ═══ */}
+      <AnimatePresence>
+        {showAddPayoutModal && (
+          <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+            <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-[#0C1220] border border-white/10 rounded-2xl p-6 w-full max-w-sm shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Plus className="w-5 h-5 text-cyan-400" />Add Withdrawal Method
+              </h3>
+
+              <form onSubmit={handleAddPayoutMethod} className="space-y-4">
+                <div>
+                  <label className="text-xs text-gray-500 mb-1.5 block">Method type</label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {PAYOUT_TYPES.map((t) => {
+                      const Icon     = t.icon;
+                      const selected = payoutForm.method_type === t.value;
+                      return (
+                        <button key={t.value} type="button"
+                          onClick={() => setPayoutForm({ ...payoutForm, method_type: t.value })}
+                          className={`p-2.5 rounded-xl border text-[10px] font-bold flex flex-col items-center gap-1.5 cursor-pointer transition-colors ${
+                            selected ? "bg-cyan-500/10 border-cyan-500/40 text-cyan-400"
+                                     : "bg-[#141C30] border-white/8 text-gray-400 hover:text-white"}`}>
+                          <Icon className="w-4 h-4" />{t.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-gray-500 mt-2">
+                    {PAYOUT_TYPES.find((t) => t.value === payoutForm.method_type)?.note}
+                  </p>
+                </div>
+
+                {payoutForm.method_type === "UPI" ? (
+                  <div>
+                    <label className="text-xs text-gray-500 mb-1.5 block">UPI ID</label>
+                    <input type="text" placeholder="name@okhdfcbank" required
+                      value={payoutForm.upi_id} onChange={(e) => setPayoutForm({ ...payoutForm, upi_id: e.target.value })}
+                      className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                  </div>
+                ) : (
+                  <>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1.5 block">Account holder name</label>
+                      <input type="text" placeholder="As per bank records" required
+                        value={payoutForm.account_holder} onChange={(e) => setPayoutForm({ ...payoutForm, account_holder: e.target.value })}
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1.5 block">Bank name</label>
+                      <input type="text" placeholder="e.g. HDFC Bank" required
+                        value={payoutForm.bank_name} onChange={(e) => setPayoutForm({ ...payoutForm, bank_name: e.target.value })}
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1.5 block">Account number</label>
+                      <input type="text" inputMode="numeric" placeholder="9–18 digits" required
+                        value={payoutForm.account_number} onChange={(e) => setPayoutForm({ ...payoutForm, account_number: e.target.value.replace(/\D/g, "") })}
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-500 mb-1.5 block">IFSC code</label>
+                      <input type="text" placeholder="HDFC0001234" required
+                        value={payoutForm.ifsc} onChange={(e) => setPayoutForm({ ...payoutForm, ifsc: e.target.value.toUpperCase() })}
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <label className="text-xs text-gray-500 mb-1.5 block">Nickname <span className="text-gray-600">(optional)</span></label>
+                  <input type="text" placeholder="e.g. Salary account"
+                    value={payoutForm.label} onChange={(e) => setPayoutForm({ ...payoutForm, label: e.target.value })}
+                    className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3 pt-2">
+                  <button type="button" onClick={() => setShowAddPayoutModal(false)}
+                    className="py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-xs text-gray-400 hover:text-white cursor-pointer">Cancel</button>
+                  <button type="submit" disabled={payoutSaving}
+                    className="py-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl text-xs font-semibold text-white hover:opacity-90 disabled:opacity-60 flex items-center justify-center gap-1.5 cursor-pointer">
+                    {payoutSaving ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Saving...</> : "Save Method"}
                   </button>
                 </div>
               </form>

@@ -50,6 +50,7 @@ class Users(db.Model):
     login_history = db.relationship('LoginHistory', back_populates='user', lazy='dynamic')
     subscriptions = db.relationship('UserSubscriptions', back_populates='user', lazy='dynamic')
     wallets = db.relationship('Wallets', back_populates='user', uselist=False)
+    payout_methods = db.relationship('PayoutMethods', back_populates='user', lazy='dynamic')
     portfolios = db.relationship('Portfolios', back_populates='user', lazy='dynamic')
     watchlists = db.relationship('Watchlists', back_populates='user', lazy='dynamic')
     trade_orders = db.relationship('TradeOrders', back_populates='user', lazy='dynamic')

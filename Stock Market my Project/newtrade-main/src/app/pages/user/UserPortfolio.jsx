@@ -1049,6 +1049,7 @@ import {
   AreaChart, Area, ResponsiveContainer, Tooltip, XAxis, YAxis,
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
+import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
 
 const API_BASE  = "http://127.0.0.1:5050/v1";
 const getToken  = () => localStorage.getItem("access_token");
@@ -1177,6 +1178,8 @@ export function UserPortfolio() {
   const [perfData,    setPerfData]    = useState([]);
   const [monthlyData, setMonthlyData] = useState([]);
   const [sectorData,  setSectorData]  = useState([]);
+  // True when the chart is showing today's value ticks rather than daily history.
+  const [isIntraday,  setIsIntraday]  = useState(false);
   const [loading,     setLoading]     = useState(true);
   const [error,       setError]       = useState("");
   const [creating,    setCreating]    = useState(false);
@@ -1200,41 +1203,14 @@ export function UserPortfolio() {
     return null;
   }, []);
 
-  // ── Build synthetic chart + monthly data from holdings ───────────────────
-  // Called when no PortfolioPerformanceHistory records exist yet.
-  const buildSyntheticCharts = useCallback((holdingsList) => {
-    if (!holdingsList.length) return;
-
-    // Synthetic performance: one point per holding's first_bought_at → today
-    // Use total_invested as "start" and current_value as "end"
-    const invested = holdingsList.reduce((a, h) => a + parseFloat(h.total_invested || 0), 0);
-    const current  = holdingsList.reduce(
-      (a, h) => a + (parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : parseFloat(h.total_invested || 0)), 0
-    );
-
-    const today    = new Date();
-    const fmt      = (d) => `${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
-
-    // Build a 7-day synthetic curve so the chart looks meaningful
-    const points = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      // Interpolate linearly from invested → current
-      const t     = i === 6 ? 0 : (6 - i) / 6;
-      const value = invested + (current - invested) * t;
-      points.push({ date: fmt(d), close: parseFloat(value.toFixed(2)) });
-    }
-    setPerfData(points);
-
-    // Synthetic monthly returns: single bar for current month showing % change
-    const monthPct = invested > 0 ? parseFloat((((current - invested) / invested) * 100).toFixed(2)) : 0;
-    const monthLabel = `${String(today.getMonth()+1).padStart(2,"0")}`;
-    setMonthlyData([{ m: monthLabel, r: monthPct }]);
-  }, []);
+  /* This used to synthesise a 7-day curve by interpolating invested → current
+     value whenever no snapshots existed. That drew a smooth line the portfolio
+     never actually traced — invented data presented as history. The chart now
+     only ever plots real `portfolio_performance_history` rows, and shows an
+     honest "building history" state until at least two days exist. */
 
   // ── Fetch performance history for chart ──────────────────────────────────
-  const fetchPerformance = useCallback(async (portfolioId, holdingsList) => {
+  const fetchPerformance = useCallback(async (portfolioId) => {
     try {
       const res  = await fetch(
         `${API_BASE}/portfolios/${portfolioId}/performance?interval=DAILY&limit=90`,
@@ -1245,37 +1221,62 @@ export function UserPortfolio() {
       // Response: { data: [{ date, total_value, total_invested, daily_return,
       //                       daily_return_percent, cumulative_return,
       //                       cumulative_return_percent, holdings_count }] }
-      if (data.bool && data.response?.data?.length > 0) {
-        const records = data.response.data;
+      const records = (data.bool && data.response?.data) || [];
 
-        // Performance chart
-        setPerfData(records.map(d => ({
-          date:  d.date?.slice(5) || d.date,
-          close: parseFloat(d.total_value || 0),
-        })));
-
-        // Monthly returns — group daily records by YYYY-MM
-        const monthly = {};
-        records.forEach(d => {
-          if (!d.date) return;
-          const m = d.date.slice(0, 7);
-          if (!monthly[m]) monthly[m] = { start: parseFloat(d.total_value), end: parseFloat(d.total_value) };
-          monthly[m].end = parseFloat(d.total_value);
-        });
-        const monthlyArr = Object.entries(monthly).slice(-7).map(([k, v]) => ({
-          m: k.slice(5),
-          r: v.start > 0 ? parseFloat((((v.end - v.start) / v.start) * 100).toFixed(2)) : 0,
-        }));
-        setMonthlyData(monthlyArr);
-      } else {
-        // No history records yet — build synthetic charts from holdings
-        buildSyntheticCharts(holdingsList);
+      /* Daily snapshots are one point per day, so a portfolio in its first days
+         has nothing to draw a line from. Fall back to the intraday value ticks —
+         real samples of the portfolio's value as prices moved, not interpolation. */
+      if (records.length < 2) {
+        const tickRes  = await fetch(
+          `${API_BASE}/portfolios/${portfolioId}/performance?interval=INTRADAY&limit=300`,
+          { headers: authHdr() }
+        );
+        const tickData = await tickRes.json();
+        const ticks    = (tickData.bool && tickData.response?.data) || [];
+        if (ticks.length > records.length) {
+          setPerfData(ticks.map(t => ({
+            date:  new Date(t.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            close: parseFloat(t.total_value || 0),
+          })));
+          setIsIntraday(true);
+          setMonthlyData([]);
+          return;
+        }
       }
+      setIsIntraday(false);
+
+      setPerfData(records.map(d => ({
+        date:  d.date?.slice(5) || d.date,
+        close: parseFloat(d.total_value || 0),
+      })));
+
+      // Monthly returns — group daily records by YYYY-MM, comparing the first
+      // and last snapshot in each month. A month with a single snapshot has no
+      // measurable return yet, so it is left out rather than charted as 0%.
+      const monthly = {};
+      records.forEach(d => {
+        if (!d.date) return;
+        const m = d.date.slice(0, 7);
+        const v = parseFloat(d.total_value || 0);
+        if (!monthly[m]) monthly[m] = { start: v, end: v, n: 0 };
+        monthly[m].end = v;
+        monthly[m].n  += 1;
+      });
+      setMonthlyData(
+        Object.entries(monthly)
+          .filter(([, v]) => v.n > 1 && v.start > 0)
+          .slice(-7)
+          .map(([k, v]) => ({
+            m: k.slice(5),
+            r: parseFloat((((v.end - v.start) / v.start) * 100).toFixed(2)),
+          }))
+      );
     } catch (err) {
       console.error("fetchPerformance:", err);
-      buildSyntheticCharts(holdingsList);
+      setPerfData([]);
+      setMonthlyData([]);
     }
-  }, [buildSyntheticCharts]);
+  }, []);
 
   // ── Main data loader ──────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
@@ -1372,6 +1373,12 @@ export function UserPortfolio() {
   const dayPnl        = parseFloat(portfolio?.day_change           || 0);   // day_change, NOT day_pnl
   const dayPnlPct     = parseFloat(portfolio?.day_change_percent   || 0);
 
+  // Chart direction: first → last point. Falls back to overall P&L when there is
+  // only one point, so the colour never contradicts the figure above it.
+  const perfUp = perfData.length > 1
+    ? perfData[perfData.length - 1].close >= perfData[0].close
+    : totalPnlPct >= 0;
+
   // ── Loading ───────────────────────────────────────────────────────────────
   if (loading || creating) {
     return (
@@ -1449,7 +1456,7 @@ export function UserPortfolio() {
             <div>
               <div className="text-xs text-gray-500">My Portfolio Performance</div>
               <div className="text-2xl font-bold text-white">
-                ${totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}
+                ₹{totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}
               </div>
             </div>
             {totalPnlPct !== 0 && (
@@ -1466,20 +1473,28 @@ export function UserPortfolio() {
           <div className="h-52">
             {perfData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={perfData}>
+                <AreaChart data={perfData} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="pGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%"  stopColor="#10B981" stopOpacity={0.22} />
-                      <stop offset="95%" stopColor="#10B981" stopOpacity={0}    />
+                      <stop offset="5%"  stopColor={perfUp ? "#10B981" : "#EF4444"} stopOpacity={0.22} />
+                      <stop offset="95%" stopColor={perfUp ? "#10B981" : "#EF4444"} stopOpacity={0}    />
                     </linearGradient>
                   </defs>
                   <XAxis dataKey="date" tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
-                  <YAxis tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+                  {/* Zoom to the value range — starting at 0 flattens real day-to-day
+                      movement into a straight line on a large portfolio. */}
+                  <YAxis
+                    tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} width={52}
+                    domain={valueDomain}
+                    tickFormatter={fmtAxisINR}
+                  />
                   <Tooltip
                     contentStyle={{ background: "#0C1220", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, fontSize: 11 }}
-                    formatter={v => [`₹${parseFloat(v).toLocaleString()}`, "Value"]}
+                    formatter={v => [`₹${parseFloat(v).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`, "Value"]}
                   />
-                  <Area type="monotone" dataKey="close" stroke="#10B981" strokeWidth={2} fill="url(#pGrad)" dot={false} />
+                  {/* A single snapshot has no line to draw — show the point itself. */}
+                  <Area type="monotone" dataKey="close" stroke={perfUp ? "#10B981" : "#EF4444"} strokeWidth={2}
+                    fill="url(#pGrad)" dot={showDots(perfData)} />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
@@ -1489,6 +1504,16 @@ export function UserPortfolio() {
               </div>
             )}
           </div>
+          {isIntraday && perfData.length > 1 && (
+            <div className="text-[11px] text-gray-600 mt-2">
+              Showing today's value as prices moved. Daily history builds up from here.
+            </div>
+          )}
+          {perfData.length === 1 && (
+            <div className="text-[11px] text-gray-600 mt-2">
+              Your first data point — the chart fills out as your portfolio is tracked.
+            </div>
+          )}
         </div>
 
         {/* Allocation + Monthly Returns */}

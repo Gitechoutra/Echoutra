@@ -109,7 +109,7 @@ export function AdminSettings() {
   // ── Platform ────────────────────────────────────────────────────────────────
   const [platformName,    setPlatformName]    = useState("TradeFlow");
   const [supportEmail,    setSupportEmail]    = useState("support@tradeflow.io");
-  const [defaultCurrency, setDefaultCurrency] = useState("USD");
+  const [defaultCurrency, setDefaultCurrency] = useState("INR");
   const [maintenance,     setMaint]           = useState(false);
   const [tradingEnabled,  setTradingEnabled]  = useState(true);
   const [commission,      setCommission]      = useState("0.1");
@@ -473,7 +473,7 @@ export function AdminSettings() {
                   {[
                     { label: "Platform Name",      val: platformName,    setter: setPlatformName,    type: "text",   placeholder: "TradeFlow" },
                     { label: "Support Email",       val: supportEmail,    setter: setSupportEmail,    type: "email",  placeholder: "support@tradeflow.io" },
-                    { label: "Default Currency",    val: defaultCurrency, setter: setDefaultCurrency, type: "text",   placeholder: "USD" },
+                    { label: "Default Currency",    val: defaultCurrency, setter: setDefaultCurrency, type: "text",   placeholder: "INR" },
                   ].map((f, i) => (
                     <div key={i}>
                       <label className="text-xs text-gray-500 mb-1.5 block">{f.label}</label>
@@ -496,7 +496,7 @@ export function AdminSettings() {
                   {[
                     { label: "Commission % (e.g. 0.1)",    val: commission,    setter: setCommission,    placeholder: "0.1" },
                     { label: "Withdrawal Fee % (e.g. 0.1)",val: withdrawalFee, setter: setWithdrawalFee, placeholder: "0.1" },
-                    { label: "Max Single Deposit (USD)",   val: maxDeposit,    setter: setMaxDeposit,    placeholder: "100000" },
+                    { label: "Max Single Deposit (₹)",     val: maxDeposit,    setter: setMaxDeposit,    placeholder: "100000" },
                   ].map((f, i) => (
                     <div key={i}>
                       <label className="text-xs text-gray-500 mb-1.5 block">{f.label}</label>
@@ -710,7 +710,7 @@ export function AdminSettings() {
                 {[
                   { key: "new_signups",       label: "New user registrations", desc: "Alert on every new signup" },
                   { key: "suspicious_logins", label: "Suspicious login attempts", desc: "Multiple failed login alerts" },
-                  { key: "large_trades",      label: "Large trades (>$100K)", desc: "Monitor whale activity" },
+                  { key: "large_trades",      label: "Large trades (>₹1,00,000)", desc: "Monitor whale activity" },
                   { key: "system_errors",     label: "System errors", desc: "Critical platform error notifications" },
                   { key: "daily_revenue",     label: "Daily revenue summary", desc: "End-of-day revenue report" },
                   { key: "weekly_analytics",  label: "Weekly analytics digest", desc: "Weekly KPI summary email" },

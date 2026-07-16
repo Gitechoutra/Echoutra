@@ -36,6 +36,7 @@ const nav = [
   { path: "/user/watchlist",    label: "Watchlist",    icon: Star },
   { path: "/user/trade",        label: "Trade",        icon: ArrowLeftRight },
   { path: "/user/news",         label: "News",         icon: Newspaper },
+  { path: "/user/transactions", label: "Transactions", icon: BarChart2 },
   { path: "/user/settings",     label: "Settings",     icon: Settings },
 ];
 
@@ -296,6 +297,12 @@ export function UserLayout() {
     fetchUserHoldings();
     fetchNotifications();
 
+    /* Settings lives in a sibling route, so a profile picture saved there can't
+       reach this layout through props. It fires `profile-updated` and we re-read
+       the profile, keeping the sidebar/header avatar in sync without a reload. */
+    const onProfileUpdated = () => fetchUserProfile();
+    window.addEventListener("profile-updated", onProfileUpdated);
+
     /* Refresh ticker every 5 minutes */
     marketIntervalRef.current = setInterval(() => {
       if (getToken()) fetchMarketRef.current?.();
@@ -316,6 +323,7 @@ export function UserLayout() {
     }, 30_000); // 30 seconds
 
     return () => {
+      window.removeEventListener("profile-updated", onProfileUpdated);
       clearInterval(marketIntervalRef.current);
       clearInterval(notifIntervalRef.current);
       marketIntervalRef.current = null;
@@ -383,6 +391,20 @@ export function UserLayout() {
     : authUser?.full_name || authUser?.name || authUser?.username || "Investor";
   const displayEmail  = userProfile?.email  || authUser?.email  || "";
   const displayAvatar = displayName.charAt(0).toUpperCase() || "I";
+  const avatarUrl     = userProfile?.avatar_url || "";
+
+  /* Profile picture, falling back to the name initial when none is set.
+     Used by both the sidebar row and the header dropdown so a photo saved in
+     Settings shows up everywhere without a reload. */
+  const Avatar = ({ size }) => (
+    avatarUrl ? (
+      <img src={avatarUrl} alt="" className={`${size} rounded-full object-cover border border-white/10 flex-shrink-0`} />
+    ) : (
+      <div className={`${size} rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white flex-shrink-0`}>
+        {displayAvatar}
+      </div>
+    )
+  );
 
   /* ════════════════════════════════════════════════════════════════════════
      RENDER
@@ -466,9 +488,7 @@ export function UserLayout() {
             onClick={() => setSidebarMenu((v) => !v)}
             className="flex items-center gap-3 p-2 rounded-xl hover:bg-white/5 cursor-pointer transition-colors"
           >
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white">
-              {displayAvatar}
-            </div>
+            <Avatar size="w-8 h-8" />
             <div className="flex-1 min-w-0">
               <div className="text-sm text-white truncate">{displayName}</div>
               <div className="text-xs text-gray-600 truncate">{displayEmail}</div>
@@ -627,9 +647,7 @@ export function UserLayout() {
                 onClick={() => setProfileOpen(!profileOpen)}
                 className="flex items-center gap-2 cursor-pointer p-1.5 pr-3 rounded-xl hover:bg-white/5 transition-colors"
               >
-                <div className="w-7 h-7 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-xs font-bold text-white">
-                  {displayAvatar}
-                </div>
+                <Avatar size="w-7 h-7" />
                 <span className="text-sm text-gray-300 hidden sm:block">{displayName.split(" ")[0]}</span>
                 <ChevronDown className="w-3 h-3 text-gray-500" />
               </div>

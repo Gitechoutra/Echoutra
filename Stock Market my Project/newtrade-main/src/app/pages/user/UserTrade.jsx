@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Search, CheckCircle, Clock, XCircle, ArrowUpDown,
-  Wallet, AlertCircle, RefreshCw, IndianRupee, DollarSign,
+  Wallet, AlertCircle, RefreshCw, IndianRupee,
   TrendingUp, TrendingDown, ChevronDown, X, Loader2,
 } from "lucide-react";
 
@@ -606,17 +606,12 @@ export function UserTrade() {
                   </div>
                 </div>
 
-                {/* Currency indicator */}
+                {/* Currency indicator — the platform trades exclusively in INR,
+                    so there is no cross-currency case to warn about. */}
                 {selStock && (
-                  <div className={`flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg ${
-                    stockCurrency === "INR"
-                      ? "bg-orange-500/8 border border-orange-500/15 text-orange-300"
-                      : "bg-blue-500/8 border border-blue-500/15 text-blue-300"
-                  }`}>
-                    {stockCurrency === "INR"
-                      ? <IndianRupee className="w-3 h-3" />
-                      : <DollarSign className="w-3 h-3" />}
-                    Trading in {stockCurrency} · Your wallet is in {walletCurrency}
+                  <div className="flex items-center gap-1.5 text-xs px-3 py-2 rounded-lg bg-orange-500/8 border border-orange-500/15 text-orange-300">
+                    <IndianRupee className="w-3 h-3" />
+                    Trading in ₹ INR · Your wallet is in ₹ INR
                   </div>
                 )}
 

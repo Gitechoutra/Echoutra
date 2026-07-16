@@ -11,7 +11,7 @@ from portal.models.trade_orders       import TradeOrders, OrderType, OrderSide, 
 from portal.models.trade_executions   import TradeExecutions
 from portal.models.portfolio_holdings import PortfolioHoldings
 from portal.models.portfolios         import Portfolios
-from portal.models.wallets            import Wallets
+from portal.models.wallets            import Wallets, WalletStatus
 from portal.models.wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
 from portal.models.transactions       import Transactions, TxnType, TxnStatus
 from portal.models.stocks             import Stocks
@@ -160,6 +160,15 @@ class PlaceOrder(Resource):
             wallet = Wallets.query.filter_by(user_id=user_id).first()
             if not wallet:
                 return jsonify(bool=False, status=404, response={'message': 'Wallet not found.'})
+
+            # A frozen/suspended wallet blocks ALL trading, not just deposits and
+            # withdrawals — a SELL credits the wallet and a BUY debits it, so both
+            # sides move money an admin has explicitly locked down.
+            if wallet.status != WalletStatus.ACTIVE:
+                return jsonify(bool=False, status=403, response={
+                    'message':       f'Your wallet is {wallet.status.lower()}. Trading is disabled — please contact support.',
+                    'wallet_status': wallet.status,
+                })
 
             # Queued order types need their trigger price(s).
             if order_type in (OrderType.LIMIT, OrderType.STOP_LIMIT) and not args.get('limit_price'):

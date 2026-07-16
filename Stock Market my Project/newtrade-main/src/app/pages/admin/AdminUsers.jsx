@@ -84,6 +84,8 @@ async function enrichUser(u) {
     name:           u.full_name || u.name || "—",
     email:          u.email     || "—",
     avatar:         (u.full_name || u.name || "U").slice(0, 2).toUpperCase(),
+    // /users returns the profile picture as avatar_url — fall back to initials.
+    avatarUrl:      u.avatar_url || "",
     status:         u.status    || "ACTIVE",
     country:        u.country   || u.profile?.country || "—",
     lastLogin:      u.last_login ? new Date(u.last_login).toLocaleDateString() : "—",
@@ -206,6 +208,8 @@ export function AdminUsers() {
         name:           u.full_name || u.name || "—",
         email:          u.email     || "—",
         avatar:         (u.full_name || u.name || "U").slice(0, 2).toUpperCase(),
+        // /users returns the profile picture as avatar_url — fall back to initials.
+        avatarUrl:      u.avatar_url || "",
         status:         u.status    || "ACTIVE",
         country:        u.country   || "—",
         lastLogin:      u.last_login ? new Date(u.last_login).toLocaleDateString() : "—",
@@ -502,9 +506,14 @@ export function AdminUsers() {
                       >
                         <td className="px-5 py-4">
                           <div className="flex items-center gap-3">
-                            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-600 to-purple-700 flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
-                              {u.avatar}
-                            </div>
+                            {u.avatarUrl ? (
+                              <img src={u.avatarUrl} alt=""
+                                className="w-9 h-9 rounded-full object-cover border border-white/10 flex-shrink-0" />
+                            ) : (
+                              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-600 to-purple-700 flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
+                                {u.avatar}
+                              </div>
+                            )}
                             <div>
                               <div className="text-sm font-semibold text-white">{u.name}</div>
                               <div className="text-xs text-gray-600">{u.email}</div>

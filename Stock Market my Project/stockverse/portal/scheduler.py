@@ -5,8 +5,10 @@ A dependency-free background worker (plain `threading`) that drives the live
 order engine. It runs two periodic tasks inside the Flask app context:
 
   - Every 10 seconds : Refresh live prices for stocks with queued orders, then
-                       auto-execute any LIMIT/STOP order whose trigger price is met.
-  - Every 5 minutes  : Refresh every portfolio's current_value and P&L.
+                       auto-execute any LIMIT/STOP order whose trigger price is met
+                       and fire any triggered user price alerts.
+  - Every 5 minutes  : Refresh every portfolio's current_value and P&L, and record
+                       its performance snapshot (one row per portfolio per day).
 
 A plain daemon thread is used (instead of APScheduler) so the monitor has no
 external dependencies and always runs wherever the app runs.
@@ -126,17 +128,26 @@ def _monitor_orders():
     # 2) Match + execute against the latest prices.
     process_pending_orders()
 
+    # 3) Fire any user price alerts the new prices have triggered.
+    try:
+        from portal.helpers.price_alert_engine import process_price_alerts
+        process_price_alerts()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'[scheduler] price alert scan failed: {e}')
+
 
 def _refresh_portfolio_pnl():
-    """Recompute current_value and P&L for every active portfolio from the
-    latest stock prices, via the shared engine revalue routine."""
-    from portal.models.portfolios import Portfolios
-    from portal.helpers.order_engine import revalue_portfolio
+    """
+    Recompute current_value and P&L for every active portfolio from the latest
+    stock prices, then write each one's performance snapshot.
 
-    portfolios = Portfolios.query.filter_by(is_active=True).all()
-    for p in portfolios:
-        try:
-            revalue_portfolio(p)
-        except Exception as e:
-            logger.error(f'[scheduler] revalue failed for portfolio {p.portfolio_id}: {e}')
-    logger.debug(f'[scheduler] portfolio P&L refresh: {len(portfolios)} portfolio(s).')
+    The snapshot is an upsert keyed on (portfolio, date, DAILY), so running this
+    every 5 minutes keeps today's data point current and leaves one row per day
+    behind as history — which is what the performance charts read.
+    """
+    from portal.helpers.portfolio_snapshot import snapshot_all_portfolios
+
+    summary = snapshot_all_portfolios()
+    logger.debug(f'[scheduler] portfolio P&L + snapshot: '
+                 f'{summary["written"]} written, {summary["errors"]} error(s).')

@@ -30,7 +30,9 @@ const features = [
   {
     icon: Shield,
     title: "Bank-Level Security",
-    desc: "256-bit encryption + SIPC insurance up to $500K.",
+    // Was "SIPC insurance up to $500K" — SIPC is a US scheme that does not cover
+    // Indian investors, so the claim was dropped rather than re-priced in rupees.
+    desc: "256-bit encryption with two-factor authentication.",
     color: "from-cyan-500 to-teal-600",
   },
   {
@@ -225,7 +227,7 @@ export function LandingPage() {
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <div className="text-xs text-gray-500">Portfolio Value</div>
-                  <div className="text-2xl font-bold">$124,853.42</div>
+                  <div className="text-2xl font-bold">₹1,24,853.42</div>
                 </div>
                 <div className="text-right">
                   <div className="text-xs text-gray-500">All Time</div>
@@ -384,7 +386,7 @@ export function LandingPage() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-8 text-center">
             {[
               { value: "2.4M+", label: "Active Traders" },
-              { value: "$48B+", label: "Assets Under Management" },
+              { value: "₹4,000Cr+", label: "Assets Under Management" },
               { value: "99.99%", label: "Platform Uptime" },
               { value: "0ms", label: "Commission Fees" },
             ].map((s, i) => (

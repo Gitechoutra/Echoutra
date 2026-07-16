@@ -423,7 +423,7 @@ export function UserWatchlist() {
                         <div className="text-xs text-gray-500 mb-2">Set Price Alert</div>
                         <div className="flex gap-2">
                           <div className="relative flex-1">
-                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-xs">$</span>
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-600 text-xs">₹</span>
                             <input
                               type="number"
                               value={alertPx}

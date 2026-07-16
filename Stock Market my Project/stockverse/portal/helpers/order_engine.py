@@ -38,7 +38,7 @@ from portal.models.trade_orders       import TradeOrders, OrderType, OrderSide, 
 from portal.models.trade_executions   import TradeExecutions
 from portal.models.portfolio_holdings import PortfolioHoldings
 from portal.models.portfolios         import Portfolios
-from portal.models.wallets            import Wallets
+from portal.models.wallets            import Wallets, WalletStatus
 from portal.models.wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
 from portal.models.transactions       import Transactions, TxnType, TxnStatus
 from portal.models.stocks             import Stocks
@@ -270,6 +270,18 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
     portfolio = Portfolios.query.get(order.portfolio_id)
     if portfolio:
         revalue_portfolio(portfolio)
+        # Record today's performance point so the chart reflects the trade right
+        # away rather than waiting for the nightly snapshot job. Never let a
+        # reporting failure roll back a completed fill.
+        try:
+            from portal.helpers.portfolio_snapshot import (
+                record_portfolio_snapshot, record_value_tick,
+            )
+            record_portfolio_snapshot(portfolio)
+            record_value_tick(portfolio)
+        except Exception as e:
+            logger.error(f'[order_engine] snapshot after fill failed for '
+                         f'portfolio {portfolio.portfolio_id}: {e}')
 
     logger.info(f'[order_engine] filled order {order.order_id} '
                 f'({order.order_side} {order.order_type}) {quantity} @ {execution_price}')
@@ -377,6 +389,12 @@ def process_pending_orders() -> dict:
                 order.update()
                 _release_hold_on_close(order)
                 expired += 1
+                continue
+
+            # Orders placed before an admin froze the wallet must not keep filling
+            # in the background. They stay queued and resume once it is unfrozen.
+            w = Wallets.query.filter_by(user_id=order.user_id).first()
+            if w and w.status != WalletStatus.ACTIVE:
                 continue
 
             stock = Stocks.query.get(order.stock_id)
