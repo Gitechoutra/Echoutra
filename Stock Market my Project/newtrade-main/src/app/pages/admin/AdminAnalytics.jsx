@@ -16,6 +16,7 @@ import {
   Pie,
 } from "recharts";
 import { AlertCircle, RefreshCw } from "lucide-react";
+import { valueDomain, showDots } from "../../utils/chart";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -56,6 +57,8 @@ function deriveLeaderReturn(u) {
 
 export function AdminAnalytics() {
   const [aumData, setAumData] = useState([]);
+  // True when the AUM chart is showing today's ticks rather than daily history.
+  const [aumIntraday, setAumIntraday] = useState(false);
   const [userGrowth, setUserGrowth] = useState([]);
   const [tradeVolume, setTradeVolume] = useState([]);
   const [revenueBreak, setRevenueBreak] = useState([
@@ -104,12 +107,29 @@ export function AdminAnalytics() {
 
       // ── AUM Trend ──────────────────────────────────────────────────────────
       if (aumJson.bool) {
-        const raw = aumJson.response?.data || [];
+        let raw = aumJson.response?.data || [];
+        let intraday = false;
+
+        // One daily snapshot per day → nothing to draw early on. Fall back to the
+        // intraday AUM series (Σ of live portfolio value ticks), same as the user
+        // portfolio chart, so the admin sees a real curve today.
+        if (raw.length < 2) {
+          try {
+            const tRes  = await fetch(`${API_BASE}/admin/analytics/aum_trend?interval=INTRADAY`, { headers });
+            const tJson = await tRes.json();
+            const ticks = (tJson.bool && tJson.response?.data) || [];
+            if (ticks.length > raw.length) { raw = ticks; intraday = true; }
+          } catch { /* keep daily */ }
+        }
+
         const mapped = raw.map((d) => ({
-          date:  d.date,
+          date:  intraday
+            ? new Date(d.date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            : d.date,
           close: parseFloat(d.total_aum) || 0,
         }));
         setAumData(mapped);
+        setAumIntraday(intraday);
 
         const latest = mapped[mapped.length - 1];
         if (latest) {
@@ -220,6 +240,9 @@ export function AdminAnalytics() {
   const maxCountryUsers =
     countryData.length > 0 ? Math.max(...countryData.map((c) => c.users)) : 1;
 
+  // Last 90 days of AUM samples — the series actually plotted.
+  const aumTrend = aumData.slice(-90);
+
   const kpiCards = [
     { label: "Total AUM",        value: kpis.totalAum,       change: "+3.4%",  up: true  },
     { label: "Monthly Revenue",  value: kpis.monthlyRevenue, change: "+12.4%", up: true  },
@@ -296,7 +319,7 @@ export function AdminAnalytics() {
         ) : (
           <div className="h-52">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={aumData.slice(-90)}>
+              <AreaChart data={aumTrend} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="aumGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%"  stopColor="#8B5CF6" stopOpacity={0.25} />
@@ -310,10 +333,14 @@ export function AdminAnalytics() {
                   axisLine={false}
                   interval="preserveStartEnd"
                 />
+                {/* Without an explicit domain Recharts anchors the axis at 0, which
+                    pins the line flat against the top of an empty chart. */}
                 <YAxis
                   tick={{ fill: "#4B5563", fontSize: 10 }}
                   tickLine={false}
                   axisLine={false}
+                  width={56}
+                  domain={valueDomain}
                   tickFormatter={(v) => fmtCompactINR(v)}
                 />
                 <Tooltip
@@ -325,16 +352,27 @@ export function AdminAnalytics() {
                   }}
                   formatter={(v) => [fmtCompactINR(v), "AUM"]}
                 />
+                {/* A single data point has no line to draw — show the point itself. */}
                 <Area
                   type="monotone"
                   dataKey="close"
                   stroke="#8B5CF6"
                   strokeWidth={2}
                   fill="url(#aumGrad)"
-                  dot={false}
+                  dot={showDots(aumTrend)}
                 />
               </AreaChart>
             </ResponsiveContainer>
+          </div>
+        )}
+        {aumIntraday && aumTrend.length > 1 && (
+          <div className="text-[11px] text-gray-600 mt-2 px-1">
+            Showing today's AUM as portfolio values moved. Daily history builds up from here.
+          </div>
+        )}
+        {aumTrend.length === 1 && (
+          <div className="text-[11px] text-gray-600 mt-2 px-1">
+            First data point — the trend fills out as platform AUM is tracked daily.
           </div>
         )}
       </div>

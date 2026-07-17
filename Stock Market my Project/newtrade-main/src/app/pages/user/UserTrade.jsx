@@ -300,28 +300,26 @@ export function UserTrade() {
         setPlacing(false); return;
       }
 
-      /* Try to create a backend order — graceful fallback if route 404 */
-      let rzpOrderId = null;
-      let rzpKeyId   = RAZORPAY_KEY;
-
+      /* Create a backend order — REQUIRED. The wallet is only credited against a
+         payment whose signature the server can verify, so there is no fallback. */
+      let rzpOrderId, rzpKeyId;
       try {
-        const orderRes  = await fetch(`${API_BASE}/payment/create_order`, {
+        const orderRes  = await fetch(`${API_BASE}/payments/wallet_order`, {
           method:  "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body:    JSON.stringify({
-            amount:   Math.round(topUpAmount * 100),
-            currency: "INR",
-            purpose:  "WALLET_DEPOSIT",
-          }),
+          body:    JSON.stringify({ amount: topUpAmount }),
         });
-        if (orderRes.ok) {
-          const orderData = await orderRes.json();
-          if (orderData.bool && orderData.response?.order_id) {
-            rzpOrderId = orderData.response.order_id;
-            rzpKeyId   = orderData.response.key_id || RAZORPAY_KEY;
-          }
+        const orderData = await orderRes.json();
+        if (!orderData.bool || !orderData.response?.order_id) {
+          showToast(orderData.response?.message || "Could not start the payment. Please try again.", false);
+          setPlacing(false); return;
         }
-      } catch { /* fallback — continue without order_id */ }
+        rzpOrderId = orderData.response.order_id;
+        rzpKeyId   = orderData.response.key_id || RAZORPAY_KEY;
+      } catch {
+        showToast("Network error starting payment. Please try again.", false);
+        setPlacing(false); return;
+      }
 
       const options = {
         key:         rzpKeyId,
@@ -329,41 +327,21 @@ export function UserTrade() {
         currency:    "INR",
         name:        "TradeFlow",
         description: `Wallet Top-up for ${selStock?.ticker_symbol} trade`,
-        ...(rzpOrderId ? { order_id: rzpOrderId } : {}),
+        order_id:    rzpOrderId,
         theme: { color: "#06B6D4" },
 
         handler: async (rzpResp) => {
           try {
-            /* Verify signature if we have an order_id */
-            if (rzpOrderId) {
-              const vRes  = await fetch(`${API_BASE}/payment/verify`, {
-                method:  "POST",
-                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-                body:    JSON.stringify({
-                  razorpay_order_id:   rzpResp.razorpay_order_id,
-                  razorpay_payment_id: rzpResp.razorpay_payment_id,
-                  razorpay_signature:  rzpResp.razorpay_signature,
-                  purpose:             "WALLET_DEPOSIT",
-                  amount:              topUpAmount,
-                }),
-              });
-              const vData = await vRes.json();
-              if (!vData.bool) {
-                showToast("Payment verification failed. Contact support.", false);
-                setPlacing(false); return;
-              }
-            }
-
-            /* Credit wallet */
+            /* Credit wallet — backend verifies the signature before crediting. */
             const dRes  = await fetch(`${API_BASE}/wallets/deposit`, {
               method:  "POST",
               headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
               body:    JSON.stringify({
                 amount:              topUpAmount,
                 payment_method:      "RAZORPAY",
+                razorpay_order_id:   rzpResp.razorpay_order_id,
                 razorpay_payment_id: rzpResp.razorpay_payment_id,
-                ...(rzpOrderId ? { razorpay_order_id: rzpResp.razorpay_order_id } : {}),
-                notes:               `Top-up for ${selStock?.ticker_symbol} trade`,
+                razorpay_signature:  rzpResp.razorpay_signature,
               }),
             });
             const dData = await dRes.json();

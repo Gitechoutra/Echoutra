@@ -13,15 +13,24 @@ from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 from portal.models.admin_settings     import AdminSettings
 from portal.models.kyc_verifications  import KYCVerifications, KYCStatus
 from portal.models.payout_methods     import PayoutMethods, PayoutMethodType
+from portal.models.payment_transactions import PaymentTransactions, PaymentStatus
 from portal.models.wallets             import Wallets, WalletStatus
 from portal.models.wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
+from portal.helpers.razorpay_helper    import verify_payment_signature
 
 from . import ns, logger
 
 deposit_parser = reqparse.RequestParser()
-deposit_parser.add_argument('amount',         type=float, required=True,  location='json')
-deposit_parser.add_argument('payment_method', type=str,   required=False, location='json', default='BANK_TRANSFER')
-deposit_parser.add_argument('notes',          type=str,   required=False, location='json')
+deposit_parser.add_argument('amount',              type=float, required=True,  location='json')
+deposit_parser.add_argument('payment_method',      type=str,   required=False, location='json', default='RAZORPAY')
+deposit_parser.add_argument('notes',               type=str,   required=False, location='json')
+# SECURITY: crediting the wallet now REQUIRES proof of a completed Razorpay
+# payment. Without these three fields, and a signature that verifies against the
+# gateway secret, the deposit is refused — previously the wallet was credited on
+# request alone, letting any authenticated user mint unlimited balance.
+deposit_parser.add_argument('razorpay_order_id',   type=str,   required=True,  location='json')
+deposit_parser.add_argument('razorpay_payment_id', type=str,   required=True,  location='json')
+deposit_parser.add_argument('razorpay_signature',  type=str,   required=True,  location='json')
 
 withdraw_parser = reqparse.RequestParser()
 withdraw_parser.add_argument('amount',           type=float, required=True,  location='json')
@@ -275,6 +284,40 @@ class Deposit(Resource):
                     'wallet_status': wallet.status,
                 })
 
+            # ── SECURITY: verify the Razorpay payment before crediting a rupee ──
+            # 1) The HMAC signature must verify against the gateway secret, proving
+            #    Razorpay (not the client) produced it.
+            # 2) It must correspond to an order this platform created for THIS user
+            #    (a CREATED PaymentTransactions row), so a signature from an
+            #    unrelated payment can't be replayed.
+            # 3) The order's amount must match, and it must not already be COMPLETED
+            #    (idempotency — the same payment can't be credited twice).
+            rzp_order_id   = (args.get('razorpay_order_id')   or '').strip()
+            rzp_payment_id = (args.get('razorpay_payment_id') or '').strip()
+            rzp_signature  = (args.get('razorpay_signature')  or '').strip()
+
+            if not verify_payment_signature(rzp_order_id, rzp_payment_id, rzp_signature):
+                return jsonify(bool=False, status=400, response={
+                    'message': 'Payment could not be verified. The wallet was not credited.'})
+
+            pay_txn = PaymentTransactions.query.filter_by(
+                razorpay_order_id=rzp_order_id, user_id=user_id).first()
+            if not pay_txn:
+                return jsonify(bool=False, status=404, response={
+                    'message': 'No matching payment order for this account.'})
+            if pay_txn.status == PaymentStatus.COMPLETED:
+                return jsonify(bool=False, status=409, response={
+                    'message': 'This payment has already been credited.'})
+            if Decimal(str(pay_txn.amount)) != amount:
+                return jsonify(bool=False, status=400, response={
+                    'message': 'Payment amount does not match the order.'})
+
+            pay_txn.razorpay_payment_id = rzp_payment_id
+            pay_txn.razorpay_signature  = rzp_signature
+            pay_txn.status              = PaymentStatus.COMPLETED
+            pay_txn.completed_on        = datetime.now(timezone.utc)
+            pay_txn.update()
+
             bal_before = Decimal(str(wallet.balance))
             wallet.balance           += amount
             wallet.available_balance += amount
@@ -292,7 +335,10 @@ class Deposit(Resource):
             t.net_amount        = amount
             t.balance_before    = bal_before
             t.balance_after     = bal_before + amount
-            t.description       = f'Deposit via {args.get("payment_method", "BANK_TRANSFER")}'
+            t.description       = 'Deposit via Razorpay'
+            t.reference_type    = 'RAZORPAY_PAYMENT'
+            t.reference_id      = rzp_payment_id
+            t.external_reference= rzp_order_id
             t.notes             = args.get('notes', '')
             t.completed_at      = datetime.now(timezone.utc)
             t.save()

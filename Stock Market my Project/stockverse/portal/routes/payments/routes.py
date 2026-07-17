@@ -48,6 +48,79 @@ verify_parser.add_argument('razorpay_payment_id', type=str, required=True, locat
 verify_parser.add_argument('razorpay_signature', type=str, required=True, location='json')
 verify_parser.add_argument('order_data', type=dict, required=True, location='json')
 
+wallet_order_parser = reqparse.RequestParser()
+wallet_order_parser.add_argument('amount', type=float, required=True, location='json')
+
+
+@ns.route('/wallet_order')
+class CreateWalletOrder(Resource):
+    @ns.doc(description='Create a Razorpay order for a plain wallet deposit (no stock). '
+                        'The resulting order_id must be presented back to /wallets/deposit '
+                        'with a valid payment signature — the wallet is never credited here.')
+    @jwt_required()
+    @ns.expect(wallet_order_parser, validate=True)
+    def post(self):
+        try:
+            user_id = int(get_jwt_identity())
+            args    = wallet_order_parser.parse_args(strict=False)
+            amount  = args['amount']
+
+            # Reuse the wallet's own gate checks so an order is never even created
+            # for a deposit that would be refused (KYC not approved, over the admin
+            # cap, frozen wallet). Imported lazily to avoid a circular import.
+            from portal.routes.wallets.routes import (
+                _kyc_status, _max_single_deposit, _fmt_inr,
+            )
+            from portal.models.kyc_verifications import KYCStatus
+            from portal.models.wallets import Wallets, WalletStatus
+
+            if amount is None or amount <= 0:
+                return jsonify(bool=False, status=400, response={'message': 'Amount must be > 0.'})
+
+            wallet = Wallets.query.filter_by(user_id=user_id).first()
+            if not wallet:
+                return jsonify(bool=False, status=404, response={'message': 'Wallet not found.'})
+            if wallet.status != WalletStatus.ACTIVE:
+                return jsonify(bool=False, status=403, response={
+                    'message': f'Your wallet is {wallet.status.lower()}. You cannot add money.'})
+
+            if _kyc_status(user_id) != KYCStatus.APPROVED:
+                return jsonify(bool=False, status=403, response={
+                    'message': 'Complete KYC verification before adding money.', 'kyc_required': True})
+
+            max_dep = _max_single_deposit()
+            if max_dep > 0 and Decimal(str(amount)) > max_dep:
+                return jsonify(bool=False, status=400, response={
+                    'message': f'Single deposit limit is ₹{_fmt_inr(max_dep)}.'})
+
+            result = create_order(amount, user_id, {
+                'user_id': user_id, 'purpose': 'WALLET_DEPOSIT', 'app': 'TradeFlow',
+            })
+            if not result['success']:
+                return jsonify(bool=False, status=500,
+                               response={'message': result.get('error', 'Failed to create payment order')})
+
+            payment_txn = PaymentTransactions()
+            payment_txn.user_id           = user_id
+            payment_txn.razorpay_order_id = result['order_id']
+            payment_txn.amount            = amount
+            payment_txn.currency          = result['currency']
+            payment_txn.status            = PaymentStatus.CREATED
+            payment_txn.payment_metadata  = {'purpose': 'WALLET_DEPOSIT'}
+            payment_txn.save()
+
+            return jsonify(bool=True, status=200, response={
+                'order_id':     result['order_id'],
+                'amount':       result['amount'],
+                'amount_paise': result['amount_paise'],
+                'currency':     result['currency'],
+                'key_id':       result['key_id'],
+            })
+
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify(bool=False, status=500, response={'message': str(e)})
+
 
 @ns.route('/create_order')
 class CreateRazorpayOrder(Resource):

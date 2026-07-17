@@ -168,10 +168,32 @@ class AUMTrend(Resource):
                 return err
 
             p = reqparse.RequestParser()
-            p.add_argument('days', type=int, default=30, location='args')
-            args  = p.parse_args(strict=False)
-            since = date.today() - timedelta(days=min(365, args['days']))
+            p.add_argument('days',     type=int, default=30, location='args')
+            p.add_argument('interval', type=str, default='DAILY', location='args')
+            args = p.parse_args(strict=False)
 
+            # INTRADAY: platform AUM = Σ every portfolio's value. The daily
+            # PlatformStatistics snapshot is one row per day, so on the first day
+            # the chart has nothing to draw. The intraday portfolio value ticks
+            # (recorded every scheduler pass) are summed per capture instant to
+            # give a real within-day AUM curve — mirroring the user portfolio chart.
+            if args['interval'].upper() == 'INTRADAY':
+                from portal import db
+                from portal.models.portfolio_value_ticks import PortfolioValueTicks
+                from sqlalchemy import func
+                rows = (db.session.query(
+                            PortfolioValueTicks.captured_at,
+                            func.sum(PortfolioValueTicks.total_value))
+                        .group_by(PortfolioValueTicks.captured_at)
+                        .order_by(PortfolioValueTicks.captured_at.asc())
+                        .limit(500).all())
+                return jsonify(bool=True, status=200, response={
+                    'interval': 'INTRADAY',
+                    'data': [{'date': c.isoformat(), 'total_aum': float(v or 0)} for c, v in rows],
+                    'count': len(rows),
+                })
+
+            since = date.today() - timedelta(days=min(365, args['days']))
             stats = (PlatformStatistics.query
                      .filter(PlatformStatistics.snapshot_date >= since)
                      .order_by(PlatformStatistics.snapshot_date.asc())

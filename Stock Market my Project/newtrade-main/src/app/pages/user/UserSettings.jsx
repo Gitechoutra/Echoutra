@@ -629,37 +629,26 @@ export function UserSettings() {
         setAddStep("form"); setAddLoading(false); return;
       }
 
-      /* ── Step 2: Try to get a server-side Razorpay order_id ─────────────── */
-      // If /payment/wallet_order is registered → use it (Path A, most secure).
-      // If it returns 404/error → fall through to Path B (direct deposit).
-      let rzpOrderId   = null;   // null = Razorpay will generate its own reference
-      let amountPaise  = Math.round(amount * 100);
-      let rzpKey       = RAZORPAY_KEY;
-
+      /* ── Step 2: Get a server-side Razorpay order_id ─────────────────────
+         REQUIRED — the wallet is only credited against a verified payment tied
+         to an order the server created. There is no unverified fallback: a
+         deposit without a signature the backend can check is refused. */
+      let rzpOrderId, amountPaise, rzpKey;
       try {
-        const orderRes  = await fetch(`${API_BASE}/payment/wallet_order`, {
-          method:  "POST",
-          headers: jsonHdr(),
-          body:    JSON.stringify({ amount }),
+        const orderRes  = await fetch(`${API_BASE}/payments/wallet_order`, {
+          method: "POST", headers: jsonHdr(), body: JSON.stringify({ amount }),
         });
-
-        // Only trust the response if the endpoint actually exists (not 404)
-        if (orderRes.status !== 404) {
-          const orderData = await orderRes.json();
-          if (orderData.bool && orderData.response?.order_id) {
-            rzpOrderId  = orderData.response.order_id;
-            amountPaise = orderData.response.amount_paise || amountPaise;
-            rzpKey      = orderData.response.key_id       || rzpKey;
-          }
-          // If endpoint exists but returned an error, surface it and stop
-          else if (!orderData.bool && orderRes.status !== 404) {
-            showToast(orderData.response?.message || "Failed to create payment order.", false);
-            setAddStep("form"); setAddLoading(false); return;
-          }
+        const orderData = await orderRes.json();
+        if (!orderData.bool || !orderData.response?.order_id) {
+          showToast(orderData.response?.message || "Could not start the payment. Please try again.", false);
+          setAddStep("form"); setAddLoading(false); return;
         }
-        // 404 → /payment/wallet_order not yet registered → silent fallback to Path B
+        rzpOrderId  = orderData.response.order_id;
+        amountPaise = orderData.response.amount_paise || Math.round(amount * 100);
+        rzpKey      = orderData.response.key_id       || RAZORPAY_KEY;
       } catch {
-        // Network error on order creation → fallback to Path B silently
+        showToast("Network error starting payment. Please try again.", false);
+        setAddStep("form"); setAddLoading(false); return;
       }
 
       /* ── Step 3: Capture token NOW before opening Razorpay ──────────────── */
@@ -681,73 +670,36 @@ export function UserSettings() {
         },
         notes:  { purpose: "WALLET_DEPOSIT" },
         theme:  { color: "#06B6D4" },
-        // Only pass order_id when we actually have one — if null/undefined,
-        // Razorpay opens in "standalone" mode (no signature verification needed)
-        ...(rzpOrderId ? { order_id: rzpOrderId } : {}),
+        order_id: rzpOrderId,   // always present — signature verification is mandatory
 
         /* ── Step 5: Payment success callback ───────────────────────────────
-           PATH A (order_id present): POST /payment/wallet_deposit_verify
-             → verifies HMAC signature + credits wallet atomically
-           PATH B (no order_id):     POST /wallets/deposit directly
-             → this endpoint already works (confirmed from screenshots)
-        ─────────────────────────────────────────────────────────────────── */
+           Credit the wallet via /wallets/deposit, passing the Razorpay order id,
+           payment id and signature. The backend verifies the signature against
+           the gateway secret before crediting — there is no unverified path. */
         handler: async (rzpResponse) => {
           const hdrs = {
             "Content-Type": "application/json",
             Authorization:  `Bearer ${capturedToken}`,
           };
-
           try {
-            let credited = false;
-
-            if (rzpOrderId) {
-              /* ── PATH A: Verify signature, then credit ──────────────────── */
-              const verifyRes  = await fetch(`${API_BASE}/payment/wallet_deposit_verify`, {
-                method: "POST", headers: hdrs,
-                body: JSON.stringify({
-                  razorpay_order_id:   rzpResponse.razorpay_order_id,
-                  razorpay_payment_id: rzpResponse.razorpay_payment_id,
-                  razorpay_signature:  rzpResponse.razorpay_signature,
-                  amount,
-                }),
-              });
-              const verifyData = await verifyRes.json();
-
-              if (verifyData.bool) {
-                credited = true;
-              } else if (verifyRes.status === 404) {
-                // wallet_deposit_verify not yet registered — fall to Path B
-                console.warn("wallet_deposit_verify not found, falling back to /wallets/deposit");
-              } else {
-                showToast(verifyData.response?.message || "Verification failed. Contact support.", false);
-                setAddStep("form"); setAddLoading(false); return;
-              }
+            const depositRes  = await fetch(`${API_BASE}/wallets/deposit`, {
+              method: "POST", headers: hdrs,
+              body: JSON.stringify({
+                amount,
+                payment_method:      "RAZORPAY",
+                razorpay_order_id:   rzpResponse.razorpay_order_id,
+                razorpay_payment_id: rzpResponse.razorpay_payment_id,
+                razorpay_signature:  rzpResponse.razorpay_signature,
+              }),
+            });
+            const depositData = await depositRes.json();
+            if (!depositData.bool) {
+              showToast(depositData.response?.message || "Deposit failed. Contact support.", false);
+              setAddStep("form"); setAddLoading(false); return;
             }
-
-            if (!credited) {
-              /* ── PATH B: Credit wallet directly (always works) ──────────── */
-              const depositRes  = await fetch(`${API_BASE}/wallets/deposit`, {
-                method: "POST", headers: hdrs,
-                body: JSON.stringify({
-                  amount,
-                  payment_method: "RAZORPAY",
-                  notes: `Razorpay payment ${rzpResponse.razorpay_payment_id || ""}`,
-                }),
-              });
-              const depositData = await depositRes.json();
-
-              if (!depositData.bool) {
-                showToast(depositData.response?.message || "Deposit failed. Contact support.", false);
-                setAddStep("form"); setAddLoading(false); return;
-              }
-              credited = true;
-            }
-
-            if (credited) {
-              setAddStep("success");
-              await fetchWallet();
-              await fetchWalletTransactions();
-            }
+            setAddStep("success");
+            await fetchWallet();
+            await fetchWalletTransactions();
           } catch {
             showToast("Network error during payment. Contact support if money was debited.", false);
             setAddStep("form");
