@@ -7,6 +7,11 @@ import {
   ChevronLeft, AlertCircle, CheckCircle2,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
+import {
+  filterEmail, filterDigits,
+  validateEmail, validateOtp, validatePassword, validateConfirmPassword,
+  LIMITS,
+} from "../utils/validation";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 
@@ -26,6 +31,8 @@ function ForgotPasswordModal({ onClose }) {
   // Step 0 — request OTP via forgot_password
   const handleSendOtp = async (e) => {
     e.preventDefault();
+    const emailError = validateEmail(fpEmail);
+    if (emailError) { setFpError(emailError); return; }
     setFpError("");
     setFpLoading(true);
     try {
@@ -50,7 +57,8 @@ function ForgotPasswordModal({ onClose }) {
   // Step 1 → 2 — just advance (OTP typed, move to new-password screen)
   const handleOtpNext = (e) => {
     e.preventDefault();
-    if (fpOtp.trim().length !== 6) { setFpError("Enter the 6-digit OTP."); return; }
+    const otpError = validateOtp(fpOtp, 6);
+    if (otpError) { setFpError(otpError); return; }
     setFpError("");
     setFpStep(2);
   };
@@ -59,8 +67,10 @@ function ForgotPasswordModal({ onClose }) {
   const handleResetPassword = async (e) => {
     e.preventDefault();
     setFpError("");
-    if (fpNewPw !== fpConfirm) { setFpError("Passwords do not match."); return; }
-    if (fpNewPw.length < 6)    { setFpError("Password must be at least 6 characters."); return; }
+    // Full complexity rules here — this flow previously allowed 6 characters,
+    // which let a reset silently downgrade a password below the signup bar.
+    const pwError = validatePassword(fpNewPw) || validateConfirmPassword(fpNewPw, fpConfirm);
+    if (pwError) { setFpError(pwError); return; }
     setFpLoading(true);
     try {
       const res  = await fetch(`${API_BASE}/authentication/reset_password`, {
@@ -113,9 +123,9 @@ function ForgotPasswordModal({ onClose }) {
                 <div className="relative">
                   <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                   <input
-                    type="email" required
+                    type="email" required inputMode="email" maxLength={LIMITS.EMAIL_MAX}
                     value={fpEmail}
-                    onChange={(e) => setFpEmail(e.target.value)}
+                    onChange={(e) => setFpEmail(filterEmail(e.target.value))}
                     placeholder="you@example.com"
                     className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20"
                   />
@@ -146,9 +156,9 @@ function ForgotPasswordModal({ onClose }) {
               <div>
                 <label className="text-xs text-gray-500 mb-1.5 block">OTP Code</label>
                 <input
-                  type="text" required maxLength={6}
+                  type="text" required maxLength={6} inputMode="numeric" pattern="\d{6}" autoComplete="one-time-code"
                   value={fpOtp}
-                  onChange={(e) => setFpOtp(e.target.value.replace(/\D/g, ""))}
+                  onChange={(e) => setFpOtp(filterDigits(e.target.value, 6))}
                   placeholder="Enter 6-digit OTP"
                   className="w-full bg-[#141C30] border border-white/8 rounded-xl px-4 py-3 text-sm text-center tracking-widest text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 text-lg font-bold"
                 />
@@ -278,6 +288,12 @@ export function SignInPage() {
   // ── POST /authentication/login ───────────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // Email format only. Password complexity is deliberately NOT checked on
+    // sign-in: accounts created before that rule existed would be unable to
+    // log in to their own accounts. The server agrees (see routes.py::Login).
+    const emailError = validateEmail(email);
+    if (emailError) { setError(emailError); return; }
+    if (!password) { setError("Password is required."); return; }
     setError("");
     setLoading(true);
     try {
@@ -438,9 +454,9 @@ export function SignInPage() {
                   <div className="relative">
                     <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-600" />
                     <input
-                      type="email" required
+                      type="email" required inputMode="email" autoComplete="email" maxLength={LIMITS.EMAIL_MAX}
                       value={email}
-                      onChange={(e) => setEmail(e.target.value)}
+                      onChange={(e) => setEmail(filterEmail(e.target.value))}
                       placeholder="you@example.com"
                       className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-10 pr-4 py-3 text-sm text-gray-200 placeholder-gray-700 focus:outline-none focus:border-white/20 transition-colors"
                     />

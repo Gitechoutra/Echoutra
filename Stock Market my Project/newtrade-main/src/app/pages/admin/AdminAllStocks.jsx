@@ -7,6 +7,8 @@ import {
   IndianRupee, Globe, BarChart2,
 } from "lucide-react";
 import { StockChart } from "../../components/StockChart";
+import { useMarketStatus, useLivePrices } from "../../hooks/useMarketStatus";
+import { MarketStatusBadge, StaleDataNotice } from "../../components/MarketStatusBadge";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -115,9 +117,11 @@ export function AdminAllStocks() {
   /* ── Interactive chart modal ── */
   const [chartTarget, setChartTarget] = useState(null);   // selected stock row
 
-  /* ── Fetch ── */
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  /* ── Fetch ──
+     `silent` skips the spinner so background price polls refresh the numbers
+     in place instead of flashing the whole table every few seconds. */
+  const fetchData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     setError("");
     try {
       /* Primary: admin overview gives holder counts + AUM per stock */
@@ -175,6 +179,14 @@ export function AdminAllStocks() {
       setLoading(false);
     }
   }, []);
+
+  /* Live price polling, on the same cadence and the same market-status source
+     the User portal uses. Admin previously had NO auto-refresh at all -- prices
+     only moved when someone clicked "Refresh Live", so the two portals routinely
+     showed different prices for the same stock at the same moment. */
+  const { status: marketStatus } = useMarketStatus();
+  const refreshPrices = useCallback(() => fetchData(true), [fetchData]);
+  useLivePrices(refreshPrices, { status: marketStatus });
 
   /* Merge admin overview row with stocks/list row */
   function mergeStock(ov, listS) {
@@ -335,14 +347,19 @@ export function AdminAllStocks() {
       {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-xl font-bold text-white">All Stocks — Platform View</h1>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-xl font-bold text-white">All Stocks — Platform View</h1>
+            <MarketStatusBadge status={marketStatus} compact />
+          </div>
           <p className="text-sm text-gray-500 mt-0.5">
             Every stock listed on the platform with live holdings data.
             All prices are shown in Indian Rupees (₹ INR).
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={fetchData}
+          {/* Arrow fn, not `onClick={fetchData}`: the handler would pass a
+              MouseEvent as `silent`, and a truthy event kills the spinner. */}
+          <button onClick={() => fetchData()}
             className="p-2 rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-colors">
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
@@ -358,6 +375,8 @@ export function AdminAllStocks() {
           </button>
         </div>
       </div>
+
+      <StaleDataNotice status={marketStatus} />
 
       {error && (
         <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">

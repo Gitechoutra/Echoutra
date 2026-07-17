@@ -22,24 +22,14 @@ logger = logging.getLogger('stockmarket')
 MONITOR_INTERVAL_SECONDS = 10
 PNL_REFRESH_EVERY_TICKS  = 30          # 30 * 10s = every 5 minutes
 
-# NSE trading session, in IST (UTC+5:30). The full-market live refresh only runs
-# inside these hours so we don't burn Upstox calls while the market is closed.
-IST                = timezone(timedelta(hours=5, minutes=30))
-MARKET_OPEN_HHMM   = (9, 15)
-MARKET_CLOSE_HHMM  = (15, 30)
+# Market hours come from portal.helpers.market_calendar so the scheduler and the
+# /stocks/market_status endpoint can never disagree. The old local check here
+# knew only weekday + clock time, so on an NSE holiday it refreshed all day and
+# the UI presented a flat, unchanging price as live.
+from portal.helpers.market_calendar import IST, is_market_open as _market_is_open  # noqa: E402
 
 _worker  = None
 _started = False
-
-
-def _market_is_open(now=None):
-    """True during NSE regular trading hours (Mon–Fri, 09:15–15:30 IST)."""
-    now = now or datetime.now(IST)
-    if now.weekday() >= 5:                      # 5 = Sat, 6 = Sun
-        return False
-    open_t  = now.replace(hour=MARKET_OPEN_HHMM[0],  minute=MARKET_OPEN_HHMM[1],  second=0, microsecond=0)
-    close_t = now.replace(hour=MARKET_CLOSE_HHMM[0], minute=MARKET_CLOSE_HHMM[1], second=0, microsecond=0)
-    return open_t <= now <= close_t
 
 
 def init_scheduler(app):
@@ -119,8 +109,13 @@ def _monitor_orders():
                 db.session.commit()
                 if summary.get('updated'):
                     logger.debug(f'[scheduler] refreshed {summary["updated"]} live price(s)')
-                if summary.get('rate_limited'):
-                    logger.warning('[scheduler] Upstox token expired/invalid — live prices are stale. Regenerate UPSTOX_ACCESS_TOKEN.')
+                if summary.get('token_expired'):
+                    logger.warning(
+                        '[scheduler] Upstox token expired/invalid — live prices are STALE. '
+                        'Run generate_upstox_token.py and restart to resume live data.')
+                elif summary.get('rate_limited'):
+                    logger.warning(
+                        '[scheduler] Upstox rate limit hit — backing off; prices are briefly stale.')
     except Exception as e:
         db.session.rollback()
         logger.warning(f'[scheduler] live price refresh failed (non-fatal): {e}')

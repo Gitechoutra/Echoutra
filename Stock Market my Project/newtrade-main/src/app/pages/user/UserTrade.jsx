@@ -6,6 +6,11 @@ import {
   Wallet, AlertCircle, RefreshCw, IndianRupee,
   TrendingUp, TrendingDown, ChevronDown, X, Loader2,
 } from "lucide-react";
+import {
+  filterQuantity, filterDecimal, filterSearch,
+  validateQuantity, validatePrice, validateAmount,
+  LIMITS,
+} from "../../utils/validation";
 
 
 const API_BASE     = "http://127.0.0.1:5050/v1";
@@ -224,7 +229,15 @@ export function UserTrade() {
   ════════════════════════════════════════════════════════ */
   const placeOrder = async () => {
     if (!selStock?.stock_id) { showToast("No stock selected.", false); return; }
-    if (!qtyNum || qtyNum < 1) { showToast("Enter a valid quantity.", false); return; }
+
+    const qtyError = validateQuantity(qty);
+    if (qtyError) { showToast(qtyError, false); return; }
+
+    if (orderType === "LIMIT") {
+      const pxError = validatePrice(limitPx, { label: "Limit price" });
+      if (pxError) { showToast(pxError, false); return; }
+    }
+
     if (tradeType === "SELL" && qtyNum > myShares) {
       showToast(`You only own ${myShares} shares of ${selStock.ticker_symbol}.`, false); return;
     }
@@ -280,10 +293,9 @@ export function UserTrade() {
      5. Refresh wallet → placeOrder()
   ════════════════════════════════════════════════════════ */
   const handleTopUpThenBuy = async () => {
+    const amtError = validateAmount(topUpAmt, { label: "Top-up amount", min: 1 });
+    if (amtError) { showToast(amtError, false); return; }
     const topUpAmount = parseFloat(topUpAmt);
-    if (isNaN(topUpAmount) || topUpAmount < 1) {
-      showToast("Enter a valid top-up amount (min ₹1).", false); return;
-    }
     if (topUpAmount < deficit) {
       showToast(`Add at least ₹${deficit.toFixed(2)} to cover this order.`, false); return;
     }
@@ -536,9 +548,10 @@ export function UserTrade() {
                               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-600" />
                               <input
                                 ref={searchRef}
-                                type="text" value={searchQ}
-                                onChange={e => setSearchQ(e.target.value)}
+                                type="text" value={searchQ} maxLength={LIMITS.SEARCH_MAX}
+                                onChange={e => setSearchQ(filterSearch(e.target.value))}
                                 placeholder="Search symbol or name…"
+                                aria-label="Search stocks by symbol or name"
                                 className="w-full bg-[#141C30] rounded-xl pl-8 pr-3 py-2 text-xs text-gray-300 focus:outline-none" />
                             </div>
                           </div>
@@ -619,7 +632,12 @@ export function UserTrade() {
                     )}
                   </label>
                   <div className="flex gap-2">
-                    <input type="number" min="1" value={qty} onChange={e => setQty(e.target.value)}
+                    {/* type="text" + filterQuantity, not type="number": a number
+                        input still accepts "e", "+" and "-", so "1e5" and "-5"
+                        can be typed into it. */}
+                    <input type="text" inputMode="numeric" value={qty}
+                      onChange={e => setQty(filterQuantity(e.target.value))}
+                      aria-label="Quantity in shares"
                       className="flex-1 bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
                     <div className="flex gap-1">
                       {["1","5","10","25"].map(q => (
@@ -642,9 +660,10 @@ export function UserTrade() {
                     <label className="text-xs text-gray-500 mb-2 block">Limit Price ({stockCurrency})</label>
                     <div className="relative">
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{sym(stockCurrency)}</span>
-                      <input type="number" min="0" step="0.01" value={limitPx}
-                        onChange={e => setLimitPx(e.target.value)}
+                      <input type="text" inputMode="decimal" value={limitPx}
+                        onChange={e => setLimitPx(filterDecimal(e.target.value, 2))}
                         placeholder={currentPrice.toFixed(2)}
+                        aria-label={`Limit price in ${stockCurrency}`}
                         className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
                     </div>
                   </div>
@@ -855,9 +874,10 @@ export function UserTrade() {
                   </label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">₹</span>
-                    <input type="number" min={Math.ceil(deficit)} step="1"
+                    <input type="text" inputMode="decimal"
                       value={topUpAmt}
-                      onChange={e => setTopUpAmt(e.target.value)}
+                      onChange={e => setTopUpAmt(filterDecimal(e.target.value, 2))}
+                      aria-label="Amount to add in rupees"
                       placeholder={Math.ceil(deficit + 100).toString()}
                       className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-7 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
                   </div>

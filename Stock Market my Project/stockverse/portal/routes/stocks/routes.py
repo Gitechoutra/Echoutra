@@ -340,11 +340,75 @@ class UpdateStockPrice(Resource):
 
 @ns.route('/live_status')
 class LiveDataStatus(Resource):
-    @ns.doc(description='Report whether live market-data (Upstox) is configured.')
+    @ns.doc(description='Report whether live market-data (Upstox) is configured. '
+                        'Deprecated — prefer /market_status, which also reports '
+                        'whether the token actually works.')
     @jwt_required()
     def get(self):
-        from portal.helpers.market_data import is_configured
-        return jsonify(bool=True, status=200, response={'live_data_enabled': is_configured()})
+        from portal.helpers.market_data import is_configured, health
+        h = health()
+        return jsonify(bool=True, status=200, response={
+            # Kept for backwards compatibility: this only ever meant "a token
+            # string exists", which is true even when every quote 401s.
+            'live_data_enabled': is_configured(),
+            'live_data_healthy': h['healthy'],
+        })
+
+
+# ── Market status: the single source of truth for both portals ────────────────
+
+@ns.route('/market_status')
+class MarketStatus(Resource):
+    @ns.doc(description='Market session state, live-data health, and price freshness. '
+                        'Both the User and Admin portals poll this so they always '
+                        'agree on whether prices are live or stale.')
+    @jwt_required()
+    def get(self):
+        try:
+            from portal.helpers import market_calendar
+            from portal.helpers.market_data import health, seconds_since_last_success
+
+            status = market_calendar.describe()
+            h      = health()
+            is_admin = get_jwt().get('role') == 'ADMIN'
+
+            # "Live" requires BOTH an open market and a working feed. Reporting
+            # live purely from the clock is how a dead token ends up presenting
+            # yesterday's close as the current market price.
+            prices_are_live = bool(status['is_open'] and h['healthy'])
+
+            if not status['is_open']:
+                reason = status['session_label']
+            elif h['token_state'] == 'EXPIRED':
+                reason = 'Live feed unavailable — access token expired. Showing last traded price.'
+            elif h['token_state'] == 'MISSING':
+                reason = 'Live feed not configured. Showing last traded price.'
+            elif h['rate_limited']:
+                reason = 'Live feed rate limited — retrying shortly. Showing last traded price.'
+            elif not h['healthy']:
+                reason = 'Live feed unavailable. Showing last traded price.'
+            else:
+                reason = None
+
+            response = {
+                **status,
+                'prices_are_live':  prices_are_live,
+                'stale_reason':     reason,
+                'feed_healthy':     h['healthy'],
+                'seconds_since_last_quote': seconds_since_last_success(),
+                # How often the client should poll. No point hammering the API
+                # for prices that cannot move while the market is closed.
+                'poll_interval_ms': 10_000 if prices_are_live else 60_000,
+            }
+            if is_admin:
+                # Remedy detail (which token, what error) is operational data —
+                # admins only.
+                response['feed'] = h
+            return jsonify(bool=True, status=200, response=response)
+
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify(bool=False, status=500, response={'message': str(e)})
 
 
 # ── Refresh ONE stock from the live provider (Admin) ──────────────────────────
@@ -407,8 +471,12 @@ class RefreshAllLive(Resource):
             db.session.commit()   # persist all successful updates in one commit
 
             msg = f"Refreshed {summary['updated']} of {summary['total']} stock(s) from live Upstox data."
-            if summary.get('rate_limited'):
-                msg += " The Upstox access token appears to have expired — please regenerate it."
+            if summary.get('token_expired'):
+                msg += (" The Upstox access token has expired — run "
+                        "generate_upstox_token.py and restart the server. "
+                        "Prices shown are the last traded values, not live.")
+            elif summary.get('rate_limited'):
+                msg += " Upstox rate limit hit — the next refresh will back off and retry."
             return jsonify(bool=True, status=200, response={'message': msg, **summary})
 
         except Exception as e:

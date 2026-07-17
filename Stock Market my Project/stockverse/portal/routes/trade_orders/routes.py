@@ -17,6 +17,10 @@ from portal.models.transactions       import Transactions, TxnType, TxnStatus
 from portal.models.stocks             import Stocks
 from portal.models.audit_logs         import AuditLogs
 from portal.helpers.order_engine      import execute_order as engine_execute_order
+from portal.helpers.validators        import (
+    Validator, validate_quantity, validate_price, validate_choice,
+    validate_pagination, validate_notes,
+)
 from portal import db
 
 from . import ns, logger
@@ -109,26 +113,38 @@ class PlaceOrder(Resource):
             args    = place_parser.parse_args(strict=False)
 
             stock_id     = args['stock_id']
-            order_side   = args['order_side'].upper()
-            order_type   = args['order_type'].upper()
+            order_side   = (args.get('order_side') or '').upper()
+            order_type   = (args.get('order_type') or '').upper()
             trade_mode   = (args.get('trade_mode') or TradeMode.DELIVERY).upper()
-            quantity     = Decimal(str(args['quantity']))
             portfolio_id = args.get('portfolio_id')
 
-            # Validations
-            if order_side not in [OrderSide.BUY, OrderSide.SELL]:
-                return jsonify(bool=False, status=400, response={'message': 'order_side must be BUY or SELL.'})
-            if order_type not in [OrderType.MARKET, OrderType.LIMIT, OrderType.STOP, OrderType.STOP_LIMIT]:
-                return jsonify(bool=False, status=400, response={'message': 'Invalid order_type.'})
-            if trade_mode not in TradeMode.CHOICES:
-                return jsonify(bool=False, status=400, response={'message': 'trade_mode must be DELIVERY or INTRADAY.'})
+            # ── Validations ───────────────────────────────────────────────────
+            # quantity/limit_price/stop_price arrive as floats from reqparse, so
+            # 'NaN' and 'Infinity' reach us intact. validate_* rejects both;
+            # the old `quantity <= 0` guard silently passed NaN (every
+            # comparison against NaN is False) straight into the order engine.
+            v = Validator()
+            v.check('order_side',  validate_choice(order_side, [OrderSide.BUY, OrderSide.SELL], label='order_side'))
+            v.check('order_type',  validate_choice(
+                order_type,
+                [OrderType.MARKET, OrderType.LIMIT, OrderType.STOP, OrderType.STOP_LIMIT],
+                label='order_type'))
+            v.check('trade_mode',  validate_choice(trade_mode, TradeMode.CHOICES, label='trade_mode'))
+            v.check('quantity',    validate_quantity(args.get('quantity')))
+            if args.get('limit_price') is not None:
+                v.check('limit_price', validate_price(args['limit_price'], label='Limit price'))
+            if args.get('stop_price') is not None:
+                v.check('stop_price', validate_price(args['stop_price'], label='Stop price'))
+            if not v.ok:
+                return v.response()
+
             # Delivery is a cash-and-carry buy/sell — Market orders only. Limit &
             # Stop-loss are reserved for Intraday.
             if trade_mode == TradeMode.DELIVERY and order_type != OrderType.MARKET:
                 return jsonify(bool=False, status=400, response={
                     'message': 'Delivery supports Market orders only. Use Intraday for Limit / Stop orders.'})
-            if quantity <= 0:
-                return jsonify(bool=False, status=400, response={'message': 'Quantity must be > 0.'})
+
+            quantity = Decimal(str(args['quantity']))
 
             stock = Stocks.query.get(stock_id)
             if not stock:

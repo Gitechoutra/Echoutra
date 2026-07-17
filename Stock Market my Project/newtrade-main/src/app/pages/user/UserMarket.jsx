@@ -5,6 +5,9 @@ import {
   Search, TrendingUp, TrendingDown, Star,
   ChevronUp, ChevronDown, ArrowUpDown, RefreshCw, AlertCircle,
 } from "lucide-react";
+import { useMarketStatus, useLivePrices } from "../../hooks/useMarketStatus";
+import { MarketStatusBadge, StaleDataNotice } from "../../components/MarketStatusBadge";
+import { filterSearch, LIMITS } from "../../utils/validation";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -102,14 +105,16 @@ export function UserMarket() {
     return () => clearTimeout(t);
   }, [search, sector, sortBy, sortDir]); // eslint-disable-line
 
-  // Real-time price polling — silently refresh the current page every 20s so
-  // admin-refreshed live prices show up on the user side without a manual reload.
-  useEffect(() => {
-    const id = setInterval(() => {
-      if (localStorage.getItem("access_token")) fetchStocks(page, true);
-    }, 20000);
-    return () => clearInterval(id);
-  }, [page, fetchStocks]);
+  // Real-time price polling, paced by the server's market status: ~10s while
+  // trading, and stopped once the market closes since the last traded price
+  // cannot change until the next session. The old fixed 20s interval polled all
+  // night for prices that could never move.
+  const { status: marketStatus } = useMarketStatus();
+  const refreshPrices = useCallback(
+    () => fetchStocks(page, true),
+    [page, fetchStocks],
+  );
+  useLivePrices(refreshPrices, { status: marketStatus });
 
   const handleSort = (c) => {
     if (sortBy === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -139,13 +144,18 @@ export function UserMarket() {
     <div className="p-4 lg:p-6 max-w-7xl mx-auto space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-white">Market</h1>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-xl font-bold text-white">Market</h1>
+            <MarketStatusBadge status={marketStatus} compact />
+          </div>
           <p className="text-sm text-gray-500 mt-0.5">Browse stocks and discover new opportunities</p>
         </div>
         <button onClick={() => fetchStocks(page)} className="p-2 rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-colors">
           <RefreshCw className="w-4 h-4" />
         </button>
       </div>
+
+      <StaleDataNotice status={marketStatus} />
 
       {/* Index summary */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

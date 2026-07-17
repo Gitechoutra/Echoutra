@@ -1,5 +1,6 @@
 
 import logging
+import re
 import traceback
 from datetime import datetime, timedelta, timezone
 
@@ -28,6 +29,12 @@ from portal.helpers.email import (
     send_welcome_email,
     send_password_reset_email,
     send_password_changed_email,
+)
+from portal.helpers.validators import (
+    Validator,
+    validate_name, validate_email, validate_username, validate_mobile,
+    validate_otp, validate_password, validate_dob, validate_choice,
+    normalize_text,
 )
 
 # ── Fix: import db from portal, NOT APP ──────────────────────────────────────
@@ -173,30 +180,50 @@ class Register(Resource):
     def post(self):
         try:
             args       = register_parser.parse_args(strict=False)
-            email      = args['email'].strip().lower()
-            username   = args['username'].strip()
-            password   = args['password']
-            first_name = (args.get('first_name') or '').strip()
-            last_name  = (args.get('last_name') or '').strip()
-            role_name  = (args.get('role_name') or 'USER').strip().upper()
-
-            # full_name: prefer explicit, else compose from first + last
-            full_name  = (args.get('full_name') or f"{first_name} {last_name}").strip()
+            email      = (args.get('email') or '').strip().lower()
+            username   = (args.get('username') or '').strip()
+            password   = args.get('password') or ''
+            first_name = normalize_text(args.get('first_name'))
+            last_name  = normalize_text(args.get('last_name'))
 
             mobile_number = (args.get('mobile_number') or '').strip()
-            country       = (args.get('country') or '').strip()
-            state         = (args.get('state') or '').strip()
-            city          = (args.get('city') or '').strip()
+            country       = normalize_text(args.get('country'))
+            state         = normalize_text(args.get('state'))
+            city          = normalize_text(args.get('city'))
             referred_by   = (args.get('referral_code') or '').strip().upper()
-            dob           = _parse_dob(args.get('date_of_birth'))
 
-            # ── Required-field / consent validation ───────────────────────────
-            if not first_name or not last_name:
-                return jsonify(bool=False, status=400,
-                               response={'message': 'First name and last name are required.'})
+            # ── Field validation ──────────────────────────────────────────────
+            v = Validator()
+            v.check('first_name',    validate_name(first_name, 'First name'))
+            v.check('last_name',     validate_name(last_name, 'Last name'))
+            v.check('email',         validate_email(email))
+            v.check('username',      validate_username(username))
+            v.check('password',      validate_password(password))
+            v.check('mobile_number', validate_mobile(mobile_number, country='IN', required=False))
+            v.check('date_of_birth', validate_dob(args.get('date_of_birth'))
+                                     if args.get('date_of_birth') else None)
+            v.check('country',       validate_name(country, 'Country', required=False))
+            v.check('state',         validate_name(state, 'State', required=False))
+            v.check('city',          validate_name(city, 'City', required=False))
+            if referred_by and not re.match(r'^[A-Z0-9]{4,12}$', referred_by):
+                v.check('referral_code', 'Referral code must be 4-12 letters or digits.')
             if not args.get('terms_accepted'):
-                return jsonify(bool=False, status=400,
-                               response={'message': 'You must accept the Terms & Conditions to register.'})
+                v.check('terms_accepted', 'You must accept the Terms & Conditions to register.')
+            if not v.ok:
+                return v.response()
+
+            # Self-registration is always a plain USER. role_name arrives from the
+            # client, so honouring it would let anyone POST role_name='ADMIN' and
+            # mint themselves an admin account. Admins are created by seed_admin.py
+            # or promoted by an existing admin, never here.
+            role_name = 'USER'
+
+            # full_name: prefer explicit, else compose from first + last
+            full_name  = normalize_text(args.get('full_name')) or f"{first_name} {last_name}".strip()
+            if validate_name(full_name, 'Full name'):
+                full_name = f"{first_name} {last_name}".strip()
+
+            dob = _parse_dob(args.get('date_of_birth'))
 
             # ── Duplicate checks ──────────────────────────────────────────────
             # Only a VERIFIED account blocks re-registration. An unverified
@@ -308,8 +335,19 @@ class Login(Resource):
     def post(self):
         try:
             args     = login_parser.parse_args(strict=False)
-            email    = args['email'].strip().lower()
-            password = args['password']
+            email    = (args.get('email') or '').strip().lower()
+            password = args.get('password') or ''
+
+            # Presence only — deliberately NOT validate_password(). Accounts
+            # created before the complexity rule landed still have valid weak
+            # passwords; enforcing the rule here would lock them out of their
+            # own accounts. Complexity is enforced where passwords are *set*
+            # (register / reset_password / change_password).
+            # A malformed email gets the same generic reply as a wrong one, so
+            # this can't be used to enumerate registered addresses.
+            if not email or not password or validate_email(email):
+                return jsonify(bool=False, status=400,
+                               response={'message': 'Invalid email or password.'})
 
             user = Users.query.filter_by(email=email).first()
 
@@ -398,8 +436,14 @@ class VerifyOTP(Resource):
         try:
             user_id = int(get_jwt_identity())
             args    = otp_parser.parse_args(strict=False)
-            raw_otp = args['otp_code'].strip()
-            purpose = args['purpose'].strip().upper()
+            raw_otp = (args.get('otp_code') or '').strip()
+            purpose = (args.get('purpose') or '').strip().upper()
+
+            v = Validator()
+            v.check('otp_code', validate_otp(raw_otp, length=6))
+            v.check('purpose', validate_choice(purpose, OTPPurpose.CHOICES, label='Purpose'))
+            if not v.ok:
+                return v.response()
 
             otp = (OTPVerifications.query
                    .filter_by(user_id=user_id, purpose=purpose, status=OTPStatus.PENDING)
@@ -527,9 +571,12 @@ class ForgotPassword(Resource):
         try:
             import random
             args  = pw_reset_req_parser.parse_args(strict=False)
-            email = args['email'].strip().lower()
+            email = (args.get('email') or '').strip().lower()
 
-            user = Users.query.filter_by(email=email).first()
+            # A malformed email is silently treated as "no such user" and falls
+            # through to the same success reply, preserving the
+            # non-enumeration property below.
+            user = None if validate_email(email) else Users.query.filter_by(email=email).first()
             # Always return success to prevent email enumeration
             if user:
                 raw_otp             = str(random.randint(100000, 999999))
@@ -566,9 +613,16 @@ class ResetPassword(Resource):
     def post(self):
         try:
             args         = pw_reset_parser.parse_args(strict=False)
-            email        = args['email'].strip().lower()
-            raw_otp      = args['otp_code'].strip()
-            new_password = args['new_password']
+            email        = (args.get('email') or '').strip().lower()
+            raw_otp      = (args.get('otp_code') or '').strip()
+            new_password = args.get('new_password') or ''
+
+            v = Validator()
+            v.check('email',        validate_email(email))
+            v.check('otp_code',     validate_otp(raw_otp, length=6))
+            v.check('new_password', validate_password(new_password))
+            if not v.ok:
+                return v.response()
 
             user = Users.query.filter_by(email=email).first()
             if not user:
@@ -628,8 +682,16 @@ class ChangePassword(Resource):
         try:
             user_id      = int(get_jwt_identity())
             args         = change_pw_parser.parse_args(strict=False)
-            old_password = args['old_password']
-            new_password = args['new_password']
+            old_password = args.get('old_password') or ''
+            new_password = args.get('new_password') or ''
+
+            v = Validator()
+            v.require('old_password', old_password, 'Current password')
+            v.check('new_password', validate_password(new_password))
+            if old_password and new_password and old_password == new_password:
+                v.check('new_password', 'New password must be different from your current password.')
+            if not v.ok:
+                return v.response()
 
             user = Users.query.get(user_id)
             if not user:

@@ -1,13 +1,19 @@
 import logging
+import re
 import traceback
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from flask import jsonify
 from flask_restx import Namespace, Resource, reqparse
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 
-from portal.models.kyc_verifications  import KYCVerifications, KYCStatus
+from portal.models.kyc_verifications  import KYCVerifications, KYCStatus, DocumentType
 from portal.models.admin_activity_logs import AdminActivityLogs
+from portal.helpers.validators import (
+    Validator, validate_name, validate_dob, validate_choice, validate_pan,
+    validate_aadhaar, validate_date, validate_notes, validate_pagination,
+    normalize_text,
+)
 
 from . import ns, logger
 
@@ -119,14 +125,49 @@ class SubmitKYC(Resource):
             if kyc.kyc_status == KYCStatus.UNDER_REVIEW:
                 return jsonify(bool=False, status=400, response={'message': 'KYC is currently under review.'})
 
-            kyc.legal_first_name      = args['legal_first_name'].strip()
-            kyc.legal_last_name       = args['legal_last_name'].strip()
-            kyc.date_of_birth         = datetime.strptime(args['date_of_birth'], '%Y-%m-%d').date()
-            kyc.nationality           = args.get('nationality', '')
-            kyc.country_of_residence  = args.get('country_of_residence', '')
-            kyc.tax_id                = args.get('tax_id', '')
-            kyc.id_document_type      = args['id_document_type'].upper()
-            kyc.id_document_number    = args['id_document_number'].strip()
+            doc_type = (args.get('id_document_type') or '').strip().upper()
+            doc_num  = (args.get('id_document_number') or '').strip().upper()
+            tax_id   = (args.get('tax_id') or '').strip().upper()
+            country  = normalize_text(args.get('country_of_residence'))
+
+            # ── Validation ────────────────────────────────────────────────────
+            # This endpoint had none: a malformed date_of_birth reached
+            # strptime() and surfaced as a 500 with the raw exception text.
+            v = Validator()
+            v.check('legal_first_name', validate_name(args.get('legal_first_name'), 'Legal first name'))
+            v.check('legal_last_name',  validate_name(args.get('legal_last_name'), 'Legal last name'))
+            v.check('date_of_birth',    validate_dob(args.get('date_of_birth')))
+            v.check('id_document_type', validate_choice(doc_type, DocumentType.CHOICES, label='ID document type'))
+            v.check('nationality',      validate_name(args.get('nationality'), 'Nationality', required=False))
+            v.check('country_of_residence', validate_name(country, 'Country of residence', required=False))
+            v.check('id_document_expiry', validate_date(
+                args.get('id_document_expiry'), label='ID document expiry',
+                min_date=date.today(), required=False))
+
+            # India-specific formats. tax_id is the PAN; a NATIONAL_ID for an
+            # Indian resident is the Aadhaar. Other countries' IDs only get the
+            # generic shape check, since their formats differ.
+            is_india = country.upper() in ('INDIA', 'IN', '')
+            if tax_id and is_india:
+                v.check('tax_id', validate_pan(tax_id))
+            if doc_type == DocumentType.NATIONAL_ID and is_india:
+                v.check('id_document_number', validate_aadhaar(doc_num))
+            elif not doc_num:
+                v.check('id_document_number', 'ID document number is required.')
+            elif not re.fullmatch(r'[A-Z0-9\-]{4,30}', doc_num):
+                v.check('id_document_number',
+                        'ID document number can only contain letters, digits and hyphens.')
+            if not v.ok:
+                return v.response()
+
+            kyc.legal_first_name      = normalize_text(args['legal_first_name'])
+            kyc.legal_last_name       = normalize_text(args['legal_last_name'])
+            kyc.date_of_birth         = datetime.strptime(args['date_of_birth'].strip(), '%Y-%m-%d').date()
+            kyc.nationality           = normalize_text(args.get('nationality'))
+            kyc.country_of_residence  = country
+            kyc.tax_id                = tax_id
+            kyc.id_document_type      = doc_type
+            kyc.id_document_number    = doc_num
             kyc.id_document_front_url = args['id_document_front_url']
             kyc.id_document_back_url  = args.get('id_document_back_url', '')
             kyc.selfie_url            = args.get('selfie_url', '')

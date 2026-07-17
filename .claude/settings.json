@@ -2,7 +2,21 @@
   "permissions": {
     "allow": [
       "Bash(git checkout *)",
-      "Bash(./venv/Scripts/python.exe -c ' *)"
+      "Bash(./venv/Scripts/python.exe -c ' *)",
+      "Bash(python -c ' *)",
+      "Bash(node -e \"console.log\\(require\\('./package.json'\\).devDependencies\\)\")",
+      "Bash(npx vitest *)",
+      "Bash(python -m pytest tests/test_validators.py -q)",
+      "Bash(python -m pip install pytest -q)",
+      "Bash(timeout 60 python -c ' *)",
+      "Bash(python -m pip list)",
+      "Bash(python -m pip install -q Flask-Mail razorpay pyotp)",
+      "Bash(timeout 180 python -m pytest tests/test_route_validation.py -q)",
+      "Bash(timeout 120 python -m pytest tests/test_route_validation.py -q)",
+      "Bash(timeout 180 python -m pytest tests/test_route_validation.py -q -p no:cacheprovider)",
+      "Bash(grep -vE \"INFO sqlalchemy|raw sql|generated in|^\\\\s*$\")",
+      "Bash(timeout 120 python -m pytest \"tests/test_route_validation.py::test_register_rejects_missing_terms\" -q -p no:cacheprovider)",
+      "Bash(timeout 240 python -m pytest tests/ -q -p no:cacheprovider)"
     ]
   }
 }

@@ -17,6 +17,10 @@ from portal.models.payment_transactions import PaymentTransactions, PaymentStatu
 from portal.models.wallets             import Wallets, WalletStatus
 from portal.models.wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
 from portal.helpers.razorpay_helper    import verify_payment_signature
+from portal.helpers.validators         import (
+    Validator, validate_amount, validate_notes, validate_choice,
+    validate_name, validate_date, validate_pagination,
+)
 
 from . import ns, logger
 
@@ -191,6 +195,12 @@ def _validate_payout_method(args) -> str | None:
         if not (args.get(field) or '').strip():
             return f'{label} is required.'
 
+    # Name rules apply to the account holder too — a payout name with digits or
+    # markup in it is a data-quality problem the bank will reject downstream.
+    holder_error = validate_name(args.get('account_holder'), 'Account holder name')
+    if holder_error:
+        return holder_error
+
     acct = (args.get('account_number') or '').strip()
     if not re.fullmatch(r'\d{9,18}', acct):
         return 'Account number must be 9–18 digits.'
@@ -250,10 +260,17 @@ class Deposit(Resource):
         try:
             user_id = int(get_jwt_identity())
             args    = deposit_parser.parse_args(strict=False)
-            amount  = Decimal(str(args['amount']))
 
-            if amount <= 0:
-                return jsonify(bool=False, status=400, response={'message': 'Amount must be > 0.'})
+            # `amount` is a float from reqparse, so 'NaN'/'Infinity' survive
+            # parsing. The previous `amount <= 0` guard let NaN through (all
+            # NaN comparisons are False) and credited a NaN wallet balance.
+            v = Validator()
+            v.check('amount', validate_amount(args.get('amount'), label='Deposit amount'))
+            v.check('notes',  validate_notes(args.get('notes'), label='Notes', max_len=255))
+            if not v.ok:
+                return v.response()
+
+            amount  = Decimal(str(args['amount']))
 
             # Money may only enter the wallet once an admin has approved KYC.
             kyc_status = _kyc_status(user_id)
@@ -368,10 +385,14 @@ class Withdraw(Resource):
         try:
             user_id = int(get_jwt_identity())
             args    = withdraw_parser.parse_args(strict=False)
-            amount  = _money(Decimal(str(args['amount'])))
 
-            if amount <= 0:
-                return jsonify(bool=False, status=400, response={'message': 'Amount must be > 0.'})
+            v = Validator()
+            v.check('amount', validate_amount(args.get('amount'), label='Withdrawal amount'))
+            v.check('notes',  validate_notes(args.get('notes'), label='Notes', max_len=255))
+            if not v.ok:
+                return v.response()
+
+            amount  = _money(Decimal(str(args['amount'])))
 
             method = PayoutMethods.query.filter_by(
                 payout_method_id=args['payout_method_id'], user_id=user_id, is_active=True
@@ -455,6 +476,14 @@ class WithdrawQuote(Resource):
         try:
             user_id = int(get_jwt_identity())
             args    = withdraw_parser.parse_args(strict=False)
+
+            # Quote had no amount guard at all: a NaN here produced a NaN fee
+            # quote that the UI rendered as the withdrawal cost.
+            v = Validator()
+            v.check('amount', validate_amount(args.get('amount'), label='Withdrawal amount'))
+            if not v.ok:
+                return v.response()
+
             amount  = _money(Decimal(str(args['amount'])))
 
             method = PayoutMethods.query.filter_by(

@@ -27,8 +27,9 @@ Public API (unchanged from before, so routes need no edits)
 
 import os
 import logging
+import threading
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -36,6 +37,87 @@ logger = logging.getLogger(__name__)
 
 _TIMEOUT   = 15
 _BATCH_MAX = 450   # Upstox allows up to 500 instrument keys per call
+
+# ── Provider health ─────────────────────────────────────────────────────────
+# is_configured() only proves a token *string* exists. A daily-expiring Upstox
+# token means "configured" and "working" drift apart every morning at ~3:30 AM
+# IST, and the old code reported live_data_enabled=true while every quote 401'd
+# -- users saw yesterday's close presented as the live market. This tracks what
+# the API actually did on the last call so the UI can say STALE and mean it.
+
+TOKEN_UNKNOWN = 'UNKNOWN'   # nothing tried yet since boot
+TOKEN_OK      = 'OK'
+TOKEN_EXPIRED = 'EXPIRED'   # 401 — needs regenerating
+TOKEN_MISSING = 'MISSING'   # nothing in the env at all
+
+_health_lock = threading.Lock()
+_health = {
+    'token_state':          TOKEN_MISSING,
+    'last_success_at':      None,   # datetime of the last good quote
+    'last_failure_at':      None,
+    'last_error':           None,
+    'consecutive_failures': 0,
+    'rate_limited_until':   None,   # datetime; set on HTTP 429
+}
+
+
+def _set_health(**kw):
+    with _health_lock:
+        _health.update(kw)
+
+
+def _note_success():
+    with _health_lock:
+        _health.update({
+            'token_state':          TOKEN_OK,
+            'last_success_at':      datetime.now(timezone.utc),
+            'last_error':           None,
+            'consecutive_failures': 0,
+            'rate_limited_until':   None,
+        })
+
+
+def _note_failure(error, code=None):
+    with _health_lock:
+        _health['last_failure_at'] = datetime.now(timezone.utc)
+        _health['last_error'] = error
+        _health['consecutive_failures'] += 1
+        if code == 401:
+            _health['token_state'] = TOKEN_EXPIRED
+        elif code == 429:
+            # Back off so we stop hammering a provider that's already refusing.
+            _health['rate_limited_until'] = (
+                datetime.now(timezone.utc) + timedelta(seconds=_RATE_LIMIT_BACKOFF_SECONDS))
+
+
+_RATE_LIMIT_BACKOFF_SECONDS = 60
+
+
+def is_rate_limited():
+    with _health_lock:
+        until = _health['rate_limited_until']
+    return bool(until and datetime.now(timezone.utc) < until)
+
+
+def health():
+    """Snapshot of provider health for /stocks/market_status."""
+    with _health_lock:
+        h = dict(_health)
+    if not get_access_token():
+        h['token_state'] = TOKEN_MISSING
+    for k in ('last_success_at', 'last_failure_at', 'rate_limited_until'):
+        h[k] = h[k].isoformat() if h[k] else None
+    h['rate_limited'] = is_rate_limited()
+    h['healthy'] = h['token_state'] == TOKEN_OK and not h['rate_limited']
+    return h
+
+
+def seconds_since_last_success():
+    with _health_lock:
+        last = _health['last_success_at']
+    if not last:
+        return None
+    return (datetime.now(timezone.utc) - last).total_seconds()
 
 
 def _base_url():
@@ -82,7 +164,13 @@ def _fetch_quotes(keys):
         {'ok': False, 'error': '<msg>', 'code': <http_status|None>}
     """
     if not get_access_token():
+        _set_health(token_state=TOKEN_MISSING, last_error='No access token configured.')
         return {'ok': False, 'error': 'Upstox access token not configured.', 'code': None}
+
+    # Respect our own backoff — retrying inside a 429 window just extends it.
+    if is_rate_limited():
+        return {'ok': False, 'error': 'Rate limited by Upstox — backing off.', 'code': 429}
+
     try:
         resp = requests.get(
             f"{_base_url()}/market-quote/quotes",
@@ -93,18 +181,24 @@ def _fetch_quotes(keys):
         payload = resp.json()
     except requests.RequestException as e:
         logger.error(f"[market_data] Upstox network error: {e}")
+        _note_failure(f'Network error: {e}')
         return {'ok': False, 'error': f'Network error: {e}', 'code': None}
     except ValueError:
-        return {'ok': False, 'error': 'Invalid response from Upstox.', 'code': None}
+        _note_failure('Invalid (non-JSON) response from Upstox.', code=resp.status_code)
+        return {'ok': False, 'error': 'Invalid response from Upstox.', 'code': resp.status_code}
 
     if payload.get('status') != 'success':
-        # Common case: 401 → token expired/invalid.
         errs = payload.get('errors') or []
         msg  = (errs[0].get('message') if errs and isinstance(errs[0], dict)
                 else payload.get('message') or 'Upstox request failed.')
         if resp.status_code == 401:
             msg = 'Upstox access token expired or invalid — please regenerate it.'
+        elif resp.status_code == 429:
+            msg = 'Upstox rate limit hit — backing off before the next refresh.'
+        _note_failure(msg, code=resp.status_code)
         return {'ok': False, 'error': msg, 'code': resp.status_code}
+
+    _note_success()
 
     # Index by instrument_token so we can map back to our stocks by their key.
     by_token = {}
@@ -207,11 +301,20 @@ def refresh_stocks(stocks):
 
     updated = 0
     token_expired = False
+    rate_limited = False
     for i in range(0, len(keys), _BATCH_MAX):
         chunk = keys[i:i + _BATCH_MAX]
         res = _fetch_quotes(chunk)
         if not res['ok']:
             token_expired = token_expired or (res.get('code') == 401)
+            rate_limited = rate_limited or (res.get('code') == 429)
+            # A dead token or a 429 fails every remaining batch identically;
+            # marching through them just burns calls and delays the tick.
+            if res.get('code') in (401, 429):
+                for k in keys[i:]:
+                    errors.append({'symbol': key_to_stock[k].ticker_symbol,
+                                   'error': res['error'], 'code': res.get('code')})
+                break
             for k in chunk:
                 errors.append({'symbol': key_to_stock[k].ticker_symbol, 'error': res['error'], 'code': res.get('code')})
             continue
@@ -239,6 +342,9 @@ def refresh_stocks(stocks):
         'updated':       updated,
         'failed':        len(errors),
         'total':         len(stocks),
-        'rate_limited':  token_expired,   # surfaced so the route can hint a retry/regenerate
+        # These were previously one flag, so a 401 was reported to admins as a
+        # rate limit and the real fix (regenerate the token) was never shown.
+        'token_expired': token_expired,
+        'rate_limited':  rate_limited,
         'errors':        errors,
     }
