@@ -47,8 +47,9 @@ _TYPE_TO_PREF = {
 }
 
 # Users must never be able to silence these: security alerts, direct admin
-# messages, and system notices ignore every preference including the master switch.
-_ALWAYS_DELIVER = {'SECURITY', 'ADMIN_MESSAGE', 'SYSTEM'}
+# messages, system notices, and operational alerts routed to admins ignore every
+# preference including the master switch.
+_ALWAYS_DELIVER = {'SECURITY', 'ADMIN_MESSAGE', 'SYSTEM', 'KYC_SUBMITTED'}
 
 
 def _wants(user_id, notification_type) -> bool:
@@ -155,6 +156,29 @@ def broadcast_to_all(notification_type, title, body, *, exclude_user_id=None, **
         return notify_users(user_ids, notification_type, title, body, **kwargs)
     except Exception as e:
         logger.error(f"[notify] broadcast_to_all failed: {e}")
+        traceback.print_exc()
+        return 0
+
+
+def notify_admins(notification_type, title, body, **kwargs):
+    """
+    Notify every active admin. Used for work that lands in an admin's queue —
+    a KYC submission waiting on review, for example — so the alert reaches
+    whoever is on duty rather than one hard-coded account.
+    Returns the number of admins notified.
+    """
+    try:
+        from portal.models.roles import Roles, RoleTypes
+        from portal.models.users import Users, UserStatus
+        rows = (Users.query
+                .join(Roles, Users.role_id == Roles.role_id)
+                .filter(Roles.role_name == RoleTypes.ADMIN,
+                        Users.status == UserStatus.ACTIVE)
+                .with_entities(Users.user_id)
+                .all())
+        return notify_users([r.user_id for r in rows], notification_type, title, body, **kwargs)
+    except Exception as e:
+        logger.error(f"[notify] notify_admins failed: {e}")
         traceback.print_exc()
         return 0
 

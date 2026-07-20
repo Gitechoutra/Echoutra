@@ -6,7 +6,7 @@ import {
   ChevronUp, ChevronDown, ArrowUpDown, RefreshCw, AlertCircle,
 } from "lucide-react";
 import { useMarketStatus, useLivePrices } from "../../hooks/useMarketStatus";
-import { MarketStatusBadge, StaleDataNotice } from "../../components/MarketStatusBadge";
+import { MarketStatusBadge } from "../../components/MarketStatusBadge";
 import { filterSearch, LIMITS } from "../../utils/validation";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
@@ -154,8 +154,6 @@ export function UserMarket() {
           <RefreshCw className="w-4 h-4" />
         </button>
       </div>
-
-      <StaleDataNotice status={marketStatus} />
 
       {/* Index summary */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">

@@ -410,7 +410,9 @@ export function UserLayout() {
      RENDER
   ════════════════════════════════════════════════════════════════════════ */
   return (
-    <div className="flex h-screen bg-[#07091A] text-white overflow-hidden">
+    /* pt-7 reserves the fixed ticker's height so the sidebar and main column both
+       flow beneath it — prevents the sidebar footer from being clipped off-screen. */
+    <div className="flex h-screen bg-[#07091A] text-white overflow-hidden pt-7">
 
       {/* ── Ticker bar ── */}
       <div className="fixed top-0 left-0 right-0 z-50 h-7 bg-[#0A0E1E] border-b border-cyan-500/10 overflow-hidden">
@@ -438,7 +440,7 @@ export function UserLayout() {
       </AnimatePresence>
 
       {/* ── Sidebar ── */}
-      <aside className={`fixed lg:relative top-7 left-0 bottom-0 w-[228px] bg-[#0A0E1E] border-r border-cyan-500/10 z-40 flex flex-col pb-7 transition-transform duration-300 ${sidebar ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+      <aside className={`fixed lg:relative top-7 lg:top-0 left-0 bottom-0 w-[228px] bg-[#0A0E1E] border-r border-cyan-500/10 z-40 flex flex-col transition-transform duration-300 ${sidebar ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
 
         {/* Logo */}
         <div className="flex items-center gap-3 px-5 py-4 border-b border-cyan-500/10">
@@ -519,7 +521,7 @@ export function UserLayout() {
       </aside>
 
       {/* ── Main content ── */}
-      <div className="flex-1 flex flex-col min-w-0 mt-7">
+      <div className="flex-1 flex flex-col min-w-0">
 
         {/* Header */}
         <header className="bg-[#0A0E1E] border-b border-cyan-500/10 px-4 lg:px-6 py-3 flex items-center gap-4">

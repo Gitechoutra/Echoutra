@@ -62,10 +62,37 @@ export function AdminLayout() {
   const [searchResults, setSearchResults] = useState([]);
   const [marketIndices, setMarketIndices] = useState(FALLBACK_INDICES);
   const [userProfile,   setUserProfile]   = useState(null);
+  const [popups,        setPopups]        = useState([]);   // transient toasts for arriving alerts
 
   const fetchNotifRef    = useRef(null);
   const notifIntervalRef = useRef(null);
   const notifRef         = useRef(null);   // wraps the bell + dropdown for click-outside
+
+  /* Notification ids already surfaced as a popup. The first fetch only primes
+     this set — otherwise every page load would replay the whole backlog. */
+  const seenNotifIds = useRef(new Set());
+  const notifPrimed  = useRef(false);
+  const popupTimers  = useRef([]);
+
+  const dismissPopup = useCallback((id) => {
+    setPopups((prev) => prev.filter((p) => p.key !== id));
+  }, []);
+
+  /* Show each newly arrived alert for 3 seconds, then let it fall back to the
+     bell, where it stays until the admin reads it. */
+  const pushPopups = useCallback((items) => {
+    if (!items.length) return;
+    setPopups((prev) => [...prev, ...items].slice(-3));
+    items.forEach((item) => {
+      const t = setTimeout(() => dismissPopup(item.key), 3000);
+      popupTimers.current.push(t);
+    });
+  }, [dismissPopup]);
+
+  useEffect(() => () => {
+    popupTimers.current.forEach(clearTimeout);
+    popupTimers.current = [];
+  }, []);
 
   /* ── Close the notification dropdown on any click outside it ───────────── */
   useEffect(() => {
@@ -152,7 +179,25 @@ export function AdminLayout() {
       if (nRes.ok) {
         const nd = await nRes.json();
         if (nd?.bool) {
-          setNotifications((nd.response?.notifications || nd.response || []).slice(0, 8));
+          const list = (nd.response?.notifications || nd.response || []).slice(0, 8);
+          setNotifications(list);
+
+          /* Anything unread we have not popped yet is "new since last poll" */
+          const fresh = list.filter((n) => {
+            const id = n.notification_id ?? n.id;
+            if (id == null || seenNotifIds.current.has(id)) return false;
+            seenNotifIds.current.add(id);
+            return !n.is_read;
+          });
+          if (notifPrimed.current) {
+            pushPopups(fresh.map((n) => ({
+              key:   n.notification_id ?? n.id,
+              type:  n.notification_type || n.type,
+              title: n.title || n.message || "New alert",
+              body:  n.message || n.body || n.description || "",
+            })));
+          }
+          notifPrimed.current = true;
         }
       }
       if (uRes.ok) {
@@ -166,7 +211,7 @@ export function AdminLayout() {
     } finally {
       if (showSpinner) setNotifLoading(false);
     }
-  }, []);
+  }, [pushPopups]);
 
   useEffect(() => { fetchNotifRef.current = fetchNotifications; }, [fetchNotifications]);
 
@@ -341,7 +386,10 @@ export function AdminLayout() {
      RENDER
   ════════════════════════════════════════════════════════════════════════ */
   return (
-    <div className="flex h-screen bg-[#07091A] text-white overflow-hidden">
+    /* pt-7 reserves the height of the fixed ticker bar so BOTH the sidebar and
+       the main column flow naturally beneath it — no per-child top offset that
+       would push the sidebar's bottom (user row) off-screen. */
+    <div className="flex h-screen bg-[#07091A] text-white overflow-hidden pt-7">
 
       {/* ── Ticker bar ── */}
       <div className="fixed top-0 left-0 right-0 z-50 h-7 bg-[#0A0C1E] border-b border-violet-500/10 overflow-hidden">
@@ -371,8 +419,11 @@ export function AdminLayout() {
         )}
       </AnimatePresence>
 
-      {/* ── Sidebar ── */}
-      <aside className={`fixed lg:relative top-7 left-0 bottom-0 w-[230px] bg-[#0A0C1E] border-r border-violet-500/10 z-40 flex flex-col pb-7 transition-transform duration-300 ${sidebar ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
+      {/* ── Sidebar ──
+          Mobile: fixed, sits below the ticker (top-7) and spans to the bottom.
+          Desktop (lg): a normal in-flow flex column (top-0, full height) inside
+          the pt-7 container, so its footer row can never spill off-screen. */}
+      <aside className={`fixed lg:relative top-7 lg:top-0 left-0 bottom-0 w-[230px] bg-[#0A0C1E] border-r border-violet-500/10 z-40 flex flex-col transition-transform duration-300 ${sidebar ? "translate-x-0" : "-translate-x-full lg:translate-x-0"}`}>
 
         <div className="flex items-center gap-3 px-5 py-4 border-b border-violet-500/10">
           <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-600 to-purple-700 flex items-center justify-center shadow-lg shadow-violet-500/20">
@@ -456,7 +507,7 @@ export function AdminLayout() {
       </aside>
 
       {/* ── Main content ── */}
-      <div className="flex-1 flex flex-col min-w-0 mt-7">
+      <div className="flex-1 flex flex-col min-w-0">
 
         <header className="bg-[#0A0C1E] border-b border-violet-500/10 px-4 lg:px-6 py-3 flex items-center gap-4">
           <button className="lg:hidden" onClick={() => setSidebar(true)}>
@@ -519,11 +570,21 @@ export function AdminLayout() {
             <div className="relative" ref={notifRef}>
               <button
                 onClick={toggleNotifs}
+                aria-label={unreadCount > 0 ? `Notifications, ${unreadCount} unread` : "Notifications"}
                 className="relative p-2 rounded-xl bg-[#141C30] border border-violet-500/10 text-gray-500 hover:text-white transition-colors"
               >
-                <Bell className="w-4 h-4" />
+                <motion.span
+                  key={unreadCount}
+                  animate={unreadCount > 0 ? { rotate: [0, -12, 12, -8, 8, 0] } : {}}
+                  transition={{ duration: 0.5 }}
+                  className="block"
+                >
+                  <Bell className="w-4 h-4" />
+                </motion.span>
                 {unreadCount > 0 && (
-                  <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-violet-500" />
+                  <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 flex items-center justify-center rounded-full bg-violet-500 text-[10px] font-bold text-white leading-none">
+                    {unreadCount > 9 ? "9+" : unreadCount}
+                  </span>
                 )}
               </button>
 
@@ -616,6 +677,41 @@ export function AdminLayout() {
         <main className="flex-1 overflow-y-auto bg-[#07091A]">
           <Outlet />
         </main>
+      </div>
+
+      {/* Arriving-alert popups — sit under the header, auto-dismiss after 3s.
+          Clicking one opens the bell so the admin can act on it. */}
+      <div className="fixed top-24 right-6 z-[60] flex flex-col gap-2 pointer-events-none">
+        <AnimatePresence>
+          {popups.map((p) => (
+            <motion.div
+              key={p.key}
+              initial={{ opacity: 0, x: 40, scale: 0.95 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0, x: 40, scale: 0.95 }}
+              transition={{ duration: 0.2 }}
+              onClick={() => { dismissPopup(p.key); setNotifs(true); }}
+              className="pointer-events-auto w-80 cursor-pointer bg-[#0C1220] border border-violet-500/30 rounded-2xl shadow-2xl px-4 py-3"
+            >
+              <div className="flex items-start gap-2.5">
+                <span className="text-base mt-0.5">{getNotifIcon(p.type)}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-white truncate">{p.title}</div>
+                  {p.body && (
+                    <div className="text-xs text-gray-500 mt-0.5 line-clamp-2">{p.body}</div>
+                  )}
+                </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); dismissPopup(p.key); }}
+                  className="text-gray-600 hover:text-white transition-colors"
+                  aria-label="Dismiss"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </motion.div>
+          ))}
+        </AnimatePresence>
       </div>
 
       <style>{`@keyframes ticker{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}`}</style>

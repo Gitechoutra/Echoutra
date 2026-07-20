@@ -13,6 +13,7 @@ from portal.models.user_sessions      import UserSessions, SessionStatus
 from portal.models.login_history      import LoginHistory
 from portal.models.admin_activity_logs import AdminActivityLogs
 from portal.models.audit_logs         import AuditLogs
+from portal.models.kyc_verifications  import KYCVerifications, KYCStatus
 
 from . import ns, logger
 
@@ -31,7 +32,7 @@ list_parser.add_argument('page',     type=int, default=1,     location='args')
 list_parser.add_argument('per_page', type=int, default=20,    location='args')
 list_parser.add_argument('status',   type=str, required=False, location='args')
 list_parser.add_argument('role',     type=str, required=False, location='args')
-list_parser.add_argument('plan',     type=str, required=False, location='args')
+list_parser.add_argument('kyc_status', type=str, required=False, location='args')
 list_parser.add_argument('search',   type=str, required=False, location='args')
 list_parser.add_argument('sort_by',  type=str, default='created_on', location='args')
 list_parser.add_argument('order',    type=str, default='desc', location='args')
@@ -52,6 +53,7 @@ admin_note_parser.add_argument('note', type=str, required=True, location='json')
 
 def _user_dict(u: Users) -> dict:
     profile = u.profile
+    kyc     = u.kyc_verification
     return {
         'user_id':           u.user_id,
         'email':             u.email,
@@ -63,6 +65,8 @@ def _user_dict(u: Users) -> dict:
         'last_login':        str(u.last_login) if u.last_login else None,
         'country':           profile.country if profile else None,
         'avatar_url':        profile.avatar_url if profile else None,
+        # A user who never started KYC has no kyc_verifications row at all.
+        'kyc_status':        kyc.kyc_status if kyc else KYCStatus.NOT_STARTED,
         'created_on':        str(u.created_on),
     }
 
@@ -91,24 +95,28 @@ class ListUsers(Resource):
                 role = Roles.query.filter_by(role_name=args['role'].upper()).first()
                 if role:
                     query = query.filter(Users.role_id == role.role_id)
-            if args.get('plan') and args['plan'].strip().upper() != 'ALL':
-                from portal.models.user_subscriptions import UserSubscriptions, SubscriptionStatus
-                from portal.models.subscription_plans  import SubscriptionPlans
-                # UI labels → plan tiers (Elite is the PREMIUM tier)
-                tier_map = {'FREE': 'FREE', 'BASIC': 'BASIC', 'PRO': 'PRO',
-                            'ELITE': 'PREMIUM', 'PREMIUM': 'PREMIUM', 'ENTERPRISE': 'ENTERPRISE'}
-                tier = tier_map.get(args['plan'].strip().upper(), args['plan'].strip().upper())
-                on_tier = [s.user_id for s in (UserSubscriptions.query
-                           .join(SubscriptionPlans, UserSubscriptions.plan_id == SubscriptionPlans.plan_id)
-                           .filter(UserSubscriptions.status == SubscriptionStatus.ACTIVE,
-                                   SubscriptionPlans.plan_tier == tier).all())]
-                if tier == 'FREE':
-                    # Free = users with an active FREE plan OR no active subscription at all
-                    any_active = [s.user_id for s in UserSubscriptions.query
-                                  .filter_by(status=SubscriptionStatus.ACTIVE).all()]
-                    query = query.filter((Users.user_id.in_(on_tier)) | (~Users.user_id.in_(any_active)))
+            if args.get('kyc_status') and args['kyc_status'].strip().upper() != 'ALL':
+                # The UI collapses six stored states into four badges, so a
+                # filter value can cover more than one stored status.
+                wanted = args['kyc_status'].strip().upper()
+                groups = {
+                    'APPROVED':    [KYCStatus.APPROVED],
+                    'PENDING':     [KYCStatus.PENDING, KYCStatus.UNDER_REVIEW],
+                    'REJECTED':    [KYCStatus.REJECTED],
+                    'NOT_STARTED': [KYCStatus.NOT_STARTED],
+                    'EXPIRED':     [KYCStatus.EXPIRED],
+                }
+                statuses = groups.get(wanted, [wanted])
+                with_status = [k.user_id for k in KYCVerifications.query
+                               .filter(KYCVerifications.kyc_status.in_(statuses)).all()]
+                if KYCStatus.NOT_STARTED in statuses:
+                    # Not started = an explicit NOT_STARTED row OR no row at all.
+                    any_kyc = [k.user_id for k in KYCVerifications.query.all()]
+                    query = query.filter(
+                        (Users.user_id.in_(with_status)) | (~Users.user_id.in_(any_kyc))
+                    )
                 else:
-                    query = query.filter(Users.user_id.in_(on_tier))
+                    query = query.filter(Users.user_id.in_(with_status))
             if args.get('search'):
                 s = f"%{args['search']}%"
                 query = query.filter(
@@ -153,7 +161,6 @@ class UserDetail(Resource):
 
             profile = user.profile
             prefs   = user.preferences
-            kyc     = user.kyc_verification
 
             # Recent login history
             recent_logins = (LoginHistory.query
@@ -169,7 +176,6 @@ class UserDetail(Resource):
                     'country':      profile.country      if profile else None,
                     'date_of_birth':str(profile.date_of_birth) if profile and profile.date_of_birth else None,
                 } if profile else {},
-                'kyc_status':   kyc.kyc_status if kyc else 'NOT_STARTED',
                 'experience_level': prefs.experience_level if prefs else None,
                 'recent_logins': [{
                     'status':     l.status,

@@ -1,14 +1,18 @@
 import logging
+import os
 import re
 import traceback
+import uuid
 from datetime import date, datetime, timezone
 
-from flask import jsonify
+from flask import jsonify, request, send_file, current_app
+from werkzeug.utils import secure_filename
 from flask_restx import Namespace, Resource, reqparse
-from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt, decode_token
 
 from portal.models.kyc_verifications  import KYCVerifications, KYCStatus, DocumentType
 from portal.models.admin_activity_logs import AdminActivityLogs
+from portal.models.users              import Users
 from portal.helpers.validators import (
     Validator, validate_name, validate_dob, validate_choice, validate_pan,
     validate_aadhaar, validate_date, validate_notes, validate_pagination,
@@ -37,6 +41,82 @@ review_parser = reqparse.RequestParser()
 review_parser.add_argument('action',           type=str, required=True,  location='json')  # APPROVE / REJECT
 review_parser.add_argument('rejection_reason', type=str, required=False, location='json')
 review_parser.add_argument('admin_notes',      type=str, required=False, location='json')
+
+
+# ── Document upload configuration ─────────────────────────────────────────────
+# KYC documents are identity papers, so unlike the profile avatar (a base64 data
+# URI in a TEXT column) they are stored as files: the *_url columns are only
+# String(500) and a scan would never fit, and these must stay access-controlled
+# rather than embedded in any JSON a client can fetch.
+ALLOWED_DOC_EXT  = {'png', 'jpg', 'jpeg', 'webp'}
+ALLOWED_DOC_MIME = {'image/png', 'image/jpeg', 'image/webp'}
+MAX_DOC_BYTES    = 5 * 1024 * 1024   # 5 MB, matching the support-chat cap
+KYC_SUBDIR       = 'kyc'
+
+# Files are named <uuid4hex>.<ext> by us and never by the client. Re-validating
+# that shape on read is what makes the path join below traversal-safe.
+_STORED_NAME_RE = re.compile(r'^[0-9a-f]{32}\.(png|jpg|jpeg|webp)$')
+
+
+def _kyc_upload_dir(user_id):
+    """Absolute path to one user's KYC folder (created on demand)."""
+    path = os.path.join(current_app.config['UPLOAD_FOLDER'], KYC_SUBDIR, str(int(user_id)))
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _save_kyc_document(file_storage, user_id):
+    """
+    Validate and persist one uploaded document.
+    Returns (relative_url, None) on success or (None, error_response) on failure.
+    """
+    if file_storage is None or file_storage.filename == '':
+        return None, jsonify(bool=False, status=400, response={'message': 'No file provided.'})
+
+    original = secure_filename(file_storage.filename)
+    ext      = original.rsplit('.', 1)[-1].lower() if '.' in original else ''
+    if ext not in ALLOWED_DOC_EXT:
+        return None, jsonify(bool=False, status=400, response={
+            'message': 'Unsupported file type. Allowed: png, jpg, jpeg, webp.'})
+
+    if file_storage.mimetype and file_storage.mimetype not in ALLOWED_DOC_MIME:
+        return None, jsonify(bool=False, status=400, response={'message': 'Unsupported image format.'})
+
+    file_storage.stream.seek(0, os.SEEK_END)
+    size = file_storage.stream.tell()
+    file_storage.stream.seek(0)
+    if size == 0:
+        return None, jsonify(bool=False, status=400, response={'message': 'File is empty.'})
+    if size > MAX_DOC_BYTES:
+        return None, jsonify(bool=False, status=400, response={'message': 'File is too large (max 5 MB).'})
+
+    stored_name = f'{uuid.uuid4().hex}.{ext}'
+    file_storage.save(os.path.join(_kyc_upload_dir(user_id), stored_name))
+
+    # Relative path — the frontend prefixes its own API base, and the column is
+    # String(500) so this comfortably fits.
+    return f'/kyc/document/{int(user_id)}/{stored_name}', None
+
+
+def validate_document_url(value, user_id, label, *, required=False):
+    """
+    A submitted document must be one this user actually uploaded.
+
+    Without this the field is a free-text string: a user could submit
+    /kyc/document/<someone-else's-id>/... and attach another person's identity
+    scan to their own KYC record. Returns an error string or None.
+    """
+    value = (value or '').strip()
+    if not value:
+        return f'{label} is required.' if required else None
+    m = re.fullmatch(r'/kyc/document/(\d+)/([0-9a-f]{32}\.(?:png|jpg|jpeg|webp))', value)
+    if not m:
+        return f'{label} must be an uploaded document.'
+    if int(m.group(1)) != int(user_id):
+        return f'{label} does not belong to you.'
+    if not os.path.exists(os.path.join(_kyc_upload_dir(user_id), m.group(2))):
+        return f'{label} could not be found — please upload it again.'
+    return None
 
 admin_list_parser = reqparse.RequestParser()
 admin_list_parser.add_argument('page',       type=int, default=1,  location='args')
@@ -81,23 +161,127 @@ def _kyc_dict(k: KYCVerifications, admin=False) -> dict:
     return data
 
 
+def _registration_prefill(user_id: int) -> dict:
+    """
+    KYC fields we can seed from what the user already gave us at registration
+    (see the register endpoint: first/last name, DOB and country all land in
+    user_profiles). Only fields actually captured at signup appear here —
+    nationality, tax ID and document details are never inferred, since guessing
+    them on an identity form would be worse than leaving them blank.
+
+    Every value is a suggestion the user can overwrite; the form still requires
+    the legal name to match their ID document.
+    """
+    user = Users.query.get(user_id)
+    if not user:
+        return {}
+
+    profile = user.profile
+    first   = (profile.first_name if profile else '') or ''
+    last    = (profile.last_name  if profile else '') or ''
+
+    # Older accounts may predate the first/last split on the profile, so fall
+    # back to splitting the full_name the users row always carries.
+    if not first and not last and user.full_name:
+        parts = user.full_name.strip().split()
+        if parts:
+            first = parts[0]
+            last  = ' '.join(parts[1:])
+
+    return {
+        'legal_first_name':     first,
+        'legal_last_name':      last,
+        'date_of_birth':        str(profile.date_of_birth) if profile and profile.date_of_birth else '',
+        'country_of_residence': (profile.country if profile else '') or '',
+    }
+
+
 # ── Get My KYC Status  ───
 
 @ns.route('/status')
 class MyKYCStatus(Resource):
-    @ns.doc(description='Get current user\'s KYC verification status.')
+    @ns.doc(description='Get current user\'s KYC verification status, plus a '
+                        '`prefill` block seeded from their registration details.')
     @jwt_required()
     def get(self):
         try:
             user_id = int(get_jwt_identity())
             kyc     = KYCVerifications.query.filter_by(user_id=user_id).first()
+            prefill = _registration_prefill(user_id)
             if not kyc:
                 return jsonify(bool=True, status=200, response={
                     'kyc_status': KYCStatus.NOT_STARTED,
                     'message':    'KYC not yet started.',
+                    'prefill':    prefill,
                 })
-            return jsonify(bool=True, status=200, response=_kyc_dict(kyc))
+            # Sent alongside the record so a re-submission (e.g. after a
+            # rejection) can fall back to registration data for any field the
+            # previous submission left empty.
+            return jsonify(bool=True, status=200, response={**_kyc_dict(kyc), 'prefill': prefill})
 
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify(bool=False, status=500, response={'message': str(e)})
+
+
+# ── Upload / serve documents ─────────────────────────────────────────────────
+
+@ns.route('/upload')
+class UploadKYCDocument(Resource):
+    @ns.doc(description='Upload one KYC document image (multipart field `file`). '
+                        'Returns the relative URL to store in the submit payload.')
+    @jwt_required()
+    def post(self):
+        try:
+            user_id  = int(get_jwt_identity())
+            url, err = _save_kyc_document(request.files.get('file'), user_id)
+            if err:
+                return err
+            return jsonify(bool=True, status=200, response={
+                'message': 'Document uploaded.',
+                'url':     url,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify(bool=False, status=500, response={'message': str(e)})
+
+
+@ns.route('/document/<int:owner_id>/<string:stored_name>')
+class ServeKYCDocument(Resource):
+    @ns.doc(description='Serve a KYC document. Auth via Authorization header or ?token=<jwt>. '
+                        'Readable only by the owner or an admin.')
+    def get(self, owner_id, stored_name):
+        try:
+            # <img> tags cannot send an Authorization header, so accept the JWT
+            # as a query param too, then authorise manually.
+            raw = request.args.get('token')
+            if not raw:
+                hdr = request.headers.get('Authorization', '')
+                if hdr.startswith('Bearer '):
+                    raw = hdr[7:]
+            if not raw:
+                return jsonify(bool=False, status=401, response={'message': 'Token required.'})
+
+            try:
+                claims = decode_token(raw)
+            except Exception:
+                return jsonify(bool=False, status=401, response={'message': 'Invalid or expired token.'})
+
+            requester_id = int(claims.get('sub'))
+            is_admin     = claims.get('role') == 'ADMIN'
+            if not is_admin and requester_id != owner_id:
+                return jsonify(bool=False, status=403, response={'message': 'Not authorised.'})
+
+            if not _STORED_NAME_RE.match(stored_name or ''):
+                return jsonify(bool=False, status=400, response={'message': 'Invalid document name.'})
+
+            path = os.path.join(_kyc_upload_dir(owner_id), stored_name)
+            if not os.path.exists(path):
+                return jsonify(bool=False, status=404, response={'message': 'File missing on server.'})
+
+            ext  = stored_name.rsplit('.', 1)[1].lower()
+            mime = 'image/png' if ext == 'png' else 'image/webp' if ext == 'webp' else 'image/jpeg'
+            return send_file(path, mimetype=mime, conditional=True)
         except Exception as e:
             traceback.print_exc()
             return jsonify(bool=False, status=500, response={'message': str(e)})
@@ -144,6 +328,17 @@ class SubmitKYC(Resource):
                 args.get('id_document_expiry'), label='ID document expiry',
                 min_date=date.today(), required=False))
 
+            # Document fields now hold paths to files uploaded via /kyc/upload,
+            # so they are validated as such rather than trusted verbatim.
+            v.check('id_document_front_url', validate_document_url(
+                args.get('id_document_front_url'), user_id, 'ID front image', required=True))
+            v.check('id_document_back_url', validate_document_url(
+                args.get('id_document_back_url'), user_id, 'ID back image'))
+            v.check('selfie_url', validate_document_url(
+                args.get('selfie_url'), user_id, 'Selfie'))
+            v.check('address_document_url', validate_document_url(
+                args.get('address_document_url'), user_id, 'Address proof'))
+
             # India-specific formats. tax_id is the PAN; a NATIONAL_ID for an
             # Indian resident is the Aadhaar. Other countries' IDs only get the
             # generic shape check, since their formats differ.
@@ -184,6 +379,21 @@ class SubmitKYC(Resource):
                 kyc.save()
             else:
                 kyc.update()
+
+            # Put the request in every admin's bell. notify_admins swallows its
+            # own errors, so a notification failure never fails the submission.
+            from portal.helpers.notify import notify_admins
+            from portal.models.notifications import NotificationType, NotificationPriority
+            applicant = f"{kyc.legal_first_name} {kyc.legal_last_name}".strip()
+            notify_admins(
+                NotificationType.KYC_SUBMITTED,
+                title="New KYC verification request 🪪",
+                body=f"{applicant or 'A user'} submitted KYC documents for review.",
+                priority=NotificationPriority.HIGH,
+                action_url=f"/admin/users?kyc_id={kyc.kyc_id}",
+                reference_type="KYC",
+                reference_id=kyc.kyc_id,
+            )
 
             return jsonify(bool=True, status=200, response={
                 'message':   'KYC documents submitted for review.',

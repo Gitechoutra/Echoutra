@@ -16,6 +16,15 @@ import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
 
 const API_BASE  = "http://127.0.0.1:5050/v1";
 const getToken  = () => localStorage.getItem("access_token");
+
+/* KYC documents uploaded through /kyc/upload are stored as relative paths and
+   served access-controlled, so they need the API base and a token appended.
+   Records submitted before uploads existed still hold absolute Drive/Dropbox
+   links, which are passed through untouched. */
+const kycDocHref = (url) =>
+  url?.startsWith("/kyc/document/")
+    ? `${API_BASE}${url}?token=${encodeURIComponent(getToken() || "")}`
+    : url;
 const authHdr   = () => ({
   "Content-Type": "application/json",
   Authorization: `Bearer ${getToken()}`,
@@ -1294,20 +1303,31 @@ export function AdminUserDetail() {
                     { label:"ID Back",        url:kyc.id_document_back_url },
                     { label:"Selfie",         url:kyc.selfie_url },
                     { label:"Address Proof",  url:kyc.address_document_url },
-                  ].map((doc, i) => (
-                    <div key={i} className="flex items-center justify-between p-3 bg-white/3 border border-white/5 rounded-xl">
-                      <div className="flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-gray-500" />
-                        <span className="text-xs text-gray-400">{doc.label}</span>
+                  ].map((doc, i) => {
+                    const href = kycDocHref(doc.url);
+                    const isImage = doc.url?.startsWith("/kyc/document/");
+                    return (
+                      <div key={i} className="flex items-center justify-between gap-3 p-3 bg-white/3 border border-white/5 rounded-xl">
+                        <div className="flex items-center gap-2 min-w-0">
+                          {isImage ? (
+                            <a href={href} target="_blank" rel="noopener noreferrer" title={`Open ${doc.label}`}>
+                              <img src={href} alt={doc.label}
+                                className="w-10 h-10 rounded-lg object-cover bg-[#0C1220] border border-white/5 hover:border-cyan-500/40 transition-colors" />
+                            </a>
+                          ) : (
+                            <FileText className="w-4 h-4 text-gray-500" />
+                          )}
+                          <span className="text-xs text-gray-400 truncate">{doc.label}</span>
+                        </div>
+                        {doc.url ? (
+                          <a href={href} target="_blank" rel="noopener noreferrer"
+                            className="text-xs text-cyan-400 hover:underline flex-shrink-0">View</a>
+                        ) : (
+                          <span className="text-xs text-gray-700 flex-shrink-0">Not uploaded</span>
+                        )}
                       </div>
-                      {doc.url ? (
-                        <a href={doc.url} target="_blank" rel="noopener noreferrer"
-                          className="text-xs text-cyan-400 hover:underline">View</a>
-                      ) : (
-                        <span className="text-xs text-gray-700">Not uploaded</span>
-                      )}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             </>

@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { useAuth } from "../../context/AuthContext";
+import { DocUpload, SelfieCapture } from "../../components/KycUpload";
 
 const API_BASE       = "http://127.0.0.1:5050/v1";
 const RAZORPAY_KEY   = "rzp_test_SzxHpcvfJEeIhH"; // from .env
@@ -322,8 +323,31 @@ export function UserSettings() {
     const res  = await fetch(`${API_BASE}/kyc/status`, { headers: authHdr() });
     const data = await res.json();
     if (data.bool && data.response) {
-      setKycData(data.response);
-      setKycStatus(data.response.kyc_status || data.response.status || "NOT_STARTED");
+      const r = data.response;
+      setKycData(r);
+      setKycStatus(r.kyc_status || r.status || "NOT_STARTED");
+
+      /* Seed the form so the user doesn't retype what they gave us at signup.
+         Precedence, highest first:
+           1. anything they've already typed into the form this session
+           2. their own previous submission (matters on a REJECTED re-submit —
+              reverting those to registration data would silently discard the
+              corrections they came here to make)
+           3. registration details from the backend `prefill` block
+         Fields KYC asks for but registration never collected (document number,
+         tax ID) stay empty by design. */
+      const pre = r.prefill || {};
+      setKycForm((p) => {
+        const seed = (field) => p[field] || r[field] || pre[field] || "";
+        return {
+          ...p,
+          legal_first_name:     seed("legal_first_name"),
+          legal_last_name:      seed("legal_last_name"),
+          date_of_birth:        seed("date_of_birth"),
+          country_of_residence: seed("country_of_residence"),
+          nationality:          seed("nationality"),
+        };
+      });
     }
   }, []);
 
@@ -543,7 +567,14 @@ export function UserSettings() {
     const required = ["legal_first_name","legal_last_name","date_of_birth",
                       "id_document_type","id_document_number","id_document_front_url"];
     for (const f of required) {
-      if (!kycForm[f]?.trim()) { setKycError(`Please fill in: ${f.replace(/_/g," ")}`); return; }
+      if (!kycForm[f]?.trim()) {
+        setKycError(
+          f === "id_document_front_url"
+            ? "Please upload a photo of the front of your ID."
+            : `Please fill in: ${f.replace(/_/g, " ")}`
+        );
+        return;
+      }
     }
     setSubmittingKyc(true);
     try {
@@ -1331,6 +1362,14 @@ export function UserSettings() {
                         )}
                         <div>
                           <p className="text-xs text-gray-500 mb-3 uppercase tracking-wider font-semibold">Personal Information</p>
+                          {/* The name on an ID document doesn't always match the one
+                              given at signup, so say where these values came from and
+                              ask for a check rather than letting them pass unnoticed. */}
+                          {kycStatus !== "REJECTED" && Object.values(kycData?.prefill || {}).some(Boolean) && (
+                            <p className="text-xs text-gray-500 mb-3 -mt-1">
+                              Filled in from your account details — please check they match your ID document exactly.
+                            </p>
+                          )}
                           <div className="grid sm:grid-cols-2 gap-3">
                             <KycField label="Legal First Name *" field="legal_first_name" placeholder="As on ID document" value={kycForm.legal_first_name} onChange={handleKycFieldChange} />
                             <KycField label="Legal Last Name *"  field="legal_last_name"  placeholder="As on ID document" value={kycForm.legal_last_name} onChange={handleKycFieldChange} />
@@ -1355,12 +1394,12 @@ export function UserSettings() {
                           </div>
                         </div>
                         <div>
-                          <p className="text-xs text-gray-500 mb-3 uppercase tracking-wider font-semibold">Document URLs</p>
-                          <p className="text-xs text-gray-600 mb-3">Upload documents to Google Drive / Dropbox and paste the public URL below.</p>
+                          <p className="text-xs text-gray-500 mb-3 uppercase tracking-wider font-semibold">Documents</p>
+                          <p className="text-xs text-gray-600 mb-3">Upload clear photos of your documents. PNG, JPG or WEBP, up to 5 MB each. Only you and our verification team can view them.</p>
                           <div className="grid sm:grid-cols-2 gap-3">
-                            <KycField label="ID Front Image URL *" field="id_document_front_url" placeholder="https://..." value={kycForm.id_document_front_url} onChange={handleKycFieldChange} />
-                            <KycField label="ID Back Image URL"    field="id_document_back_url"  placeholder="https://..." value={kycForm.id_document_back_url} onChange={handleKycFieldChange} />
-                            <KycField label="Selfie URL"           field="selfie_url"             placeholder="https://..." value={kycForm.selfie_url} onChange={handleKycFieldChange} />
+                            <DocUpload label="ID Front Image *" field="id_document_front_url" value={kycForm.id_document_front_url} onChange={handleKycFieldChange} hint="All four corners visible, no glare." />
+                            <DocUpload label="ID Back Image"    field="id_document_back_url"  value={kycForm.id_document_back_url}  onChange={handleKycFieldChange} />
+                            <SelfieCapture field="selfie_url" value={kycForm.selfie_url} onChange={handleKycFieldChange} />
                             <div>
                               <label className="text-xs text-gray-500 mb-1.5 block">Address Proof Type</label>
                               <select value={kycForm.address_document_type} onChange={(e) => setKycForm(p => ({ ...p, address_document_type: e.target.value }))}
@@ -1370,7 +1409,7 @@ export function UserSettings() {
                                 <option value="TAX_DOCUMENT">Tax Document</option>
                               </select>
                             </div>
-                            <KycField label="Address Proof URL" field="address_document_url" placeholder="https://..." value={kycForm.address_document_url} onChange={handleKycFieldChange} />
+                            <DocUpload label="Address Proof" field="address_document_url" value={kycForm.address_document_url} onChange={handleKycFieldChange} />
                           </div>
                         </div>
                         <button type="submit" disabled={submittingKyc}

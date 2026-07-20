@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { StockChart } from "../../components/StockChart";
 import { useMarketStatus, useLivePrices } from "../../hooks/useMarketStatus";
-import { MarketStatusBadge, StaleDataNotice } from "../../components/MarketStatusBadge";
+import { MarketStatusBadge } from "../../components/MarketStatusBadge";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -375,8 +375,6 @@ export function AdminAllStocks() {
           </button>
         </div>
       </div>
-
-      <StaleDataNotice status={marketStatus} />
 
       {error && (
         <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">

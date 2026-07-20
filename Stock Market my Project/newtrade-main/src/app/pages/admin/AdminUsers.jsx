@@ -3,7 +3,7 @@ import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Search, TrendingUp, TrendingDown, Users, UserCheck,
-  UserX, Crown, Eye, AlertCircle, RefreshCw, IndianRupee,
+  UserX, ShieldCheck, Eye, AlertCircle, RefreshCw, IndianRupee,
   MessageSquare, Send, X, Headphones, ImagePlus, Loader2,
 } from "lucide-react";
 
@@ -27,18 +27,20 @@ const statusColors = {
   BLOCKED:   "bg-red-500/10    text-red-400    border-red-500/15",
   BANNED:    "bg-red-900/20    text-red-500    border-red-900/30",
 };
-const planColors = {
-  Elite:      "bg-violet-500/10 text-violet-300 border-violet-500/15",
-  ELITE:      "bg-violet-500/10 text-violet-300 border-violet-500/15",
-  ENTERPRISE: "bg-violet-500/10 text-violet-300 border-violet-500/15",
-  Pro:        "bg-cyan-500/10   text-cyan-300   border-cyan-500/15",
-  PRO:        "bg-cyan-500/10   text-cyan-300   border-cyan-500/15",
-  PREMIUM:    "bg-cyan-500/10   text-cyan-300   border-cyan-500/15",
-  Basic:      "bg-blue-500/10   text-blue-300   border-blue-500/15",
-  BASIC:      "bg-blue-500/10   text-blue-300   border-blue-500/15",
-  Free:       "bg-white/5       text-gray-500   border-white/5",
-  FREE:       "bg-white/5       text-gray-500   border-white/5",
+/* ── KYC badges ──
+   The backend stores six states (see KYCStatus); the table collapses them into
+   four visual outcomes. PENDING and UNDER_REVIEW both read as "under review" to
+   an admin, and NOT_STARTED/EXPIRED are shown neutrally so a user who never
+   submitted documents is never mistaken for one awaiting a decision. */
+const kycBadges = {
+  APPROVED:     { label: "KYC Approved",  cls: "bg-emerald-500/10 text-emerald-400 border-emerald-500/15" },
+  PENDING:      { label: "KYC Pending",   cls: "bg-amber-500/10   text-amber-400   border-amber-500/15" },
+  UNDER_REVIEW: { label: "KYC Pending",   cls: "bg-amber-500/10   text-amber-400   border-amber-500/15" },
+  REJECTED:     { label: "KYC Rejected",  cls: "bg-red-500/10     text-red-400     border-red-500/15" },
+  NOT_STARTED:  { label: "Not Started",   cls: "bg-white/5        text-gray-500    border-white/5" },
+  EXPIRED:      { label: "KYC Expired",   cls: "bg-gray-500/10    text-gray-400    border-gray-500/15" },
 };
+const kycBadge = (s) => kycBadges[String(s || "").toUpperCase()] || kycBadges.NOT_STARTED;
 
 /* ── Currency formatter — wallet/portfolio values are always in INR
      (Razorpay processes deposits in INR; the Wallets model defaults to INR) ── */
@@ -76,7 +78,9 @@ function deriveReturn(p) {
   return { pct: 0, abs: 0 };
 }
 
-// ── Enrich a single user row with portfolio + subscription data ───────────────
+// ── Enrich a single user row with portfolio data ──────────────────────────────
+// kyc_status already arrives on the /users/list_users payload, so it needs no
+// per-row request here.
 async function enrichUser(u) {
   const userId = u.user_id || u.id;
   const result = {
@@ -90,8 +94,8 @@ async function enrichUser(u) {
     country:        u.country   || u.profile?.country || "—",
     lastLogin:      u.last_login ? new Date(u.last_login).toLocaleDateString() : "—",
     joinedAt:       u.created_on || u.created_at || "",
+    kycStatus:      u.kyc_status || "NOT_STARTED",
     // defaults — overwritten if APIs respond
-    plan:           "Free",
     portfolioValue: 0,
     totalReturn:    0,
     totalReturnPct: 0,
@@ -116,26 +120,6 @@ async function enrichUser(u) {
         result.totalReturn    = abs;
       }
     })(),
-    // Subscription
-    (async () => {
-      const res  = await fetch(
-        `${API_BASE}/subscriptions/admin/all?user_id=${userId}&status=ACTIVE&per_page=1`,
-        { headers: authHdr() }
-      );
-      const data = await res.json();
-      if (data.bool && data.response?.subscriptions?.length > 0) {
-        const s = data.response.subscriptions[0];
-        let plan =
-          s.plan?.plan_name      ||
-          s.plan_name            ||
-          s.plan?.plan_tier      ||
-          s.plan_tier            || "Free";
-        // Display the PREMIUM tier as "Elite" to match the plan labels used
-        // everywhere else in the product.
-        if (["Premium", "PREMIUM"].includes(plan)) plan = "Elite";
-        result.plan = plan;
-      }
-    })(),
     // Profile (country fallback)
     (async () => {
       if (result.country !== "—") return;
@@ -154,11 +138,11 @@ export function AdminUsers() {
   const navigate = useNavigate();
 
   const [search,       setSearch]       = useState("");
-  const [planFilter,   setPlan]         = useState("All");
+  const [kycFilter,    setKyc]          = useState("All");
   const [statusFilter, setStat]         = useState("All");
   const [sortBy,       setSortBy]       = useState("name");
   const [users,        setUsers]        = useState([]);
-  const [summaryStats, setSummaryStats] = useState({ total: 0, active: 0, suspended: 0, elite: 0, totalValue: 0 });
+  const [summaryStats, setSummaryStats] = useState({ total: 0, active: 0, suspended: 0, kycApproved: 0, totalValue: 0 });
   const [loading,      setLoading]      = useState(true);
   const [enriching,    setEnriching]    = useState(false);
   const [error,        setError]        = useState("");
@@ -176,14 +160,14 @@ export function AdminUsers() {
   const chatBottomRef  = useRef(null);
   const chatFileRef    = useRef(null);
 
-  const fetchUsers = useCallback(async (pageNum = 1, searchTerm = "", plan = "All", status = "All") => {
+  const fetchUsers = useCallback(async (pageNum = 1, searchTerm = "", kyc = "All", status = "All") => {
     setLoading(true);
     setError("");
     try {
       const params = new URLSearchParams({ page: pageNum, per_page: 20 });
-      if (searchTerm.trim()) params.set("search",  searchTerm.trim());
-      if (plan   !== "All") params.set("plan",     plan);
-      if (status !== "All") params.set("status",   status.toUpperCase());
+      if (searchTerm.trim()) params.set("search",     searchTerm.trim());
+      if (kyc    !== "All") params.set("kyc_status",  kyc);
+      if (status !== "All") params.set("status",      status.toUpperCase());
 
       const res  = await fetch(`${API_BASE}/users/list_users?${params}`, { headers: authHdr() });
       const data = await res.json();
@@ -213,7 +197,7 @@ export function AdminUsers() {
         status:         u.status    || "ACTIVE",
         country:        u.country   || "—",
         lastLogin:      u.last_login ? new Date(u.last_login).toLocaleDateString() : "—",
-        plan:           "—",
+        kycStatus:      u.kyc_status || "NOT_STARTED",
         portfolioValue: null,
         totalReturn:    0,
         totalReturnPct: 0,
@@ -235,11 +219,11 @@ export function AdminUsers() {
       }
 
       setSummaryStats({
-        total:      total,
-        active:     enriched.filter(u => ["ACTIVE","Active"].includes(u.status)).length,
-        suspended:  enriched.filter(u => ["SUSPENDED","BANNED","BLOCKED"].includes(u.status)).length,
-        elite:      enriched.filter(u => ["Elite","ELITE","ENTERPRISE","PREMIUM"].includes(u.plan)).length,
-        totalValue: enriched.reduce((a, u) => a + (u.portfolioValue || 0), 0),
+        total:       total,
+        active:      enriched.filter(u => ["ACTIVE","Active"].includes(u.status)).length,
+        suspended:   enriched.filter(u => ["SUSPENDED","BANNED","BLOCKED"].includes(u.status)).length,
+        kycApproved: enriched.filter(u => u.kycStatus === "APPROVED").length,
+        totalValue:  enriched.reduce((a, u) => a + (u.portfolioValue || 0), 0),
       });
     } catch (e) {
       setError("Network error. Could not load users.");
@@ -251,13 +235,32 @@ export function AdminUsers() {
 
   useEffect(() => {
     setPage(1);
-    fetchUsers(1, search, planFilter, statusFilter);
-  }, [planFilter, statusFilter]); // eslint-disable-line
+    fetchUsers(1, search, kycFilter, statusFilter);
+  }, [kycFilter, statusFilter]); // eslint-disable-line
 
   useEffect(() => {
-    const t = setTimeout(() => { setPage(1); fetchUsers(1, search, planFilter, statusFilter); }, 450);
+    const t = setTimeout(() => { setPage(1); fetchUsers(1, search, kycFilter, statusFilter); }, 450);
     return () => clearTimeout(t);
   }, [search]); // eslint-disable-line
+
+  /* ── Keep KYC status fresh ──
+     list_users reads kyc_status straight from the DB, so a re-fetch is all it
+     takes to pick up an approve/reject an admin made elsewhere (the user detail
+     page, or another tab). Re-fetch when this tab regains focus rather than
+     polling on a timer — the decision only changes on an admin action. */
+  useEffect(() => {
+    const onFocus = () => {
+      if (document.visibilityState === "visible") {
+        fetchUsers(page, search, kycFilter, statusFilter);
+      }
+    };
+    document.addEventListener("visibilitychange", onFocus);
+    window.addEventListener("focus", onFocus);
+    return () => {
+      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [fetchUsers, page, search, kycFilter, statusFilter]);
 
   const filtered = [...users].sort((a, b) => {
     if (sortBy === "value")  return (b.portfolioValue || 0) - (a.portfolioValue || 0);
@@ -379,7 +382,7 @@ export function AdminUsers() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => fetchUsers(page, search, planFilter, statusFilter)}
+            onClick={() => fetchUsers(page, search, kycFilter, statusFilter)}
             className="p-2 rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-colors"
           >
             <RefreshCw className={`w-4 h-4 ${enriching ? "animate-spin" : ""}`} />
@@ -415,9 +418,9 @@ export function AdminUsers() {
             icon: UserX, color: "text-red-400", bg: "border-red-500/15",
           },
           {
-            label: "Elite / Premium",
-            value: summaryStats.elite.toString(),
-            icon: Crown, color: "text-amber-400", bg: "border-amber-500/15",
+            label: "KYC Approved",
+            value: summaryStats.kycApproved.toString(),
+            icon: ShieldCheck, color: "text-amber-400", bg: "border-amber-500/15",
           },
         ].map((s, i) => (
           <div key={i} className={`bg-[#0C1220] border ${s.bg} rounded-2xl p-4`}>
@@ -452,17 +455,22 @@ export function AdminUsers() {
                 ? "border-violet-500/50 bg-violet-500/10 text-violet-300"
                 : "border-white/8 text-gray-600 hover:text-white"
             }`;
-          const selectPlan   = (p) => { setPlan(p); setStat("All"); };
-          const selectStatus = (s) => { setStat(s); setPlan("All"); };
+          const selectKyc    = (k) => { setKyc(k); setStat("All"); };
+          const selectStatus = (s) => { setStat(s); setKyc("All"); };
           return (
             <div className="flex gap-2 flex-wrap items-center">
-              <button onClick={() => { setPlan("All"); setStat("All"); }}
-                className={chip(planFilter === "All" && statusFilter === "All")}>
+              <button onClick={() => { setKyc("All"); setStat("All"); }}
+                className={chip(kycFilter === "All" && statusFilter === "All")}>
                 All
               </button>
-              {["Free", "Pro", "Elite"].map((p) => (
-                <button key={p} onClick={() => selectPlan(p)} className={chip(planFilter === p)}>
-                  {p}
+              {[
+                ["APPROVED",    "KYC Approved"],
+                ["PENDING",     "KYC Pending"],
+                ["REJECTED",    "KYC Rejected"],
+                ["NOT_STARTED", "Not Started"],
+              ].map(([value, label]) => (
+                <button key={value} onClick={() => selectKyc(value)} className={chip(kycFilter === value)}>
+                  {label}
                 </button>
               ))}
               <span className="w-px h-5 bg-white/10 mx-1" />
@@ -487,7 +495,7 @@ export function AdminUsers() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-white/5">
-                    {["User", "Country", "Plan", "Portfolio Value", "Total Return", "Holdings", "Status", "Action"].map((h) => (
+                    {["User", "Country", "KYC Status", "Portfolio Value", "Total Return", "Holdings", "Status", "Action"].map((h) => (
                       <th key={h} className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -524,13 +532,14 @@ export function AdminUsers() {
                           {u.country || "—"}
                         </td>
                         <td className="px-5 py-4">
-                          {u.plan === "—" ? (
-                            <span className="text-gray-700 text-xs animate-pulse">…</span>
-                          ) : (
-                            <span className={`text-xs px-2.5 py-1 rounded-full border ${planColors[u.plan] || planColors.Free}`}>
-                              {u.plan}
-                            </span>
-                          )}
+                          {(() => {
+                            const b = kycBadge(u.kycStatus);
+                            return (
+                              <span className={`text-xs px-2.5 py-1 rounded-full border whitespace-nowrap ${b.cls}`}>
+                                {b.label}
+                              </span>
+                            );
+                          })()}
                         </td>
                         <td className="px-5 py-4 text-sm font-semibold text-white">
                           {fmtValue(u.portfolioValue)}
@@ -597,7 +606,7 @@ export function AdminUsers() {
             {enriching && (
               <div className="flex items-center gap-2 px-5 py-3 border-t border-white/5 text-xs text-gray-600">
                 <div className="w-3 h-3 border border-violet-500/40 border-t-violet-500 rounded-full animate-spin" />
-                Loading portfolio &amp; plan data…
+                Loading portfolio data…
               </div>
             )}
           </>
@@ -607,7 +616,7 @@ export function AdminUsers() {
       {totalPages > 1 && (
         <div className="flex items-center justify-center gap-2">
           <button
-            onClick={() => { const p = Math.max(1, page - 1); setPage(p); fetchUsers(p, search, planFilter, statusFilter); }}
+            onClick={() => { const p = Math.max(1, page - 1); setPage(p); fetchUsers(p, search, kycFilter, statusFilter); }}
             disabled={page === 1}
             className="px-3 py-1.5 text-xs rounded-lg border border-white/10 text-gray-400 hover:text-white disabled:opacity-40 transition-colors"
           >
@@ -615,7 +624,7 @@ export function AdminUsers() {
           </button>
           <span className="text-xs text-gray-500">Page {page} of {totalPages}</span>
           <button
-            onClick={() => { const p = Math.min(totalPages, page + 1); setPage(p); fetchUsers(p, search, planFilter, statusFilter); }}
+            onClick={() => { const p = Math.min(totalPages, page + 1); setPage(p); fetchUsers(p, search, kycFilter, statusFilter); }}
             disabled={page === totalPages}
             className="px-3 py-1.5 text-xs rounded-lg border border-white/10 text-gray-400 hover:text-white disabled:opacity-40 transition-colors"
           >
