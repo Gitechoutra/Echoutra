@@ -63,14 +63,6 @@ const statusCls = {
   BANNED:    "bg-red-900/20    text-red-500    border-red-900/30",
   Inactive:  "bg-gray-500/10   text-gray-500   border-gray-500/20",
 };
-const planCls = (plan) =>
-  plan === "Elite" || plan === "ENTERPRISE" || plan === "PREMIUM"
-    ? "bg-violet-500/10 text-violet-300 border border-violet-500/20"
-    : plan === "Pro" || plan === "PRO"
-    ? "bg-cyan-500/10 text-cyan-300 border border-cyan-500/20"
-    : plan === "BASIC"
-    ? "bg-blue-500/10 text-blue-300 border border-blue-500/20"
-    : "bg-white/5 text-gray-500 border border-white/10";
 
 // ── Tiny toast component ─────────────────────────────────────────────────────
 function Toast({ msg, ok, onClose }) {
@@ -149,9 +141,7 @@ export function AdminUserDetail() {
   const [isIntraday,   setIsIntraday]   = useState(false);
   const [wallet,       setWallet]       = useState(null);
   const [kyc,          setKyc]          = useState(null);
-  const [subscription, setSubscription] = useState(null);
   const [sessions,     setSessions]     = useState([]);
-  const [plans,        setPlans]        = useState([]);
 
   const [pageLoading, setPageLoading] = useState(true);
   const [pageError,   setPageError]   = useState("");
@@ -234,33 +224,21 @@ export function AdminUserDetail() {
     }
   }, [userId, apiFetch]);
 
-  const loadSubscription = useCallback(async () => {
-    const data = await apiFetch(`${API_BASE}/subscriptions/admin/all?user_id=${userId}&status=ACTIVE&per_page=1`);
-    if (data.bool && data.response?.subscriptions?.length > 0) {
-      setSubscription(data.response.subscriptions[0]);
-    }
-  }, [userId, apiFetch]);
-
   const loadSessions = useCallback(async () => {
     const data = await apiFetch(`${API_BASE}/users/${userId}/sessions`);
     if (data.bool) setSessions(data.response?.sessions || []);
   }, [userId, apiFetch]);
-
-  const loadPlans = useCallback(async () => {
-    const data = await apiFetch(`${API_BASE}/subscriptions/plans`);
-    if (data.bool) setPlans(data.response?.plans || []);
-  }, [apiFetch]);
 
   const loadAll = useCallback(async () => {
     setPageLoading(true);
     setPageError("");
     await Promise.allSettled([
       loadUser(), loadProfile(), loadPortfolio(),
-      loadWallet(), loadKyc(), loadSubscription(),
-      loadSessions(), loadPlans(),
+      loadWallet(), loadKyc(),
+      loadSessions(),
     ]);
     setPageLoading(false);
-  }, [loadUser, loadProfile, loadPortfolio, loadWallet, loadKyc, loadSubscription, loadSessions, loadPlans]);
+  }, [loadUser, loadProfile, loadPortfolio, loadWallet, loadKyc, loadSessions]);
 
   useEffect(() => { loadAll(); }, [loadAll]);
 
@@ -314,25 +292,6 @@ export function AdminUserDetail() {
     if (data.bool) {
       showToast(`Temp password: ${data.response?.temp_password || "Sent to user"}`);
     } else showToast(data.response?.message || "Failed.", false);
-  };
-
-  const handleUpgradePlan = async () => {
-    const planId = modalInput;
-    if (!planId) return;
-    setModalLoading(true);
-    const data = await apiFetch(`${API_BASE}/subscriptions/admin/upgrade`, {
-      method: "POST",
-      body:   JSON.stringify({
-        user_id:       parseInt(userId),
-        plan_id:       parseInt(planId),
-        billing_cycle: "MONTHLY",
-        note:          "Admin upgrade",
-      }),
-    });
-    setModalLoading(false);
-    setModal(null); setModalInput("");
-    if (data.bool) { showToast("Plan upgraded."); loadSubscription(); }
-    else showToast(data.response?.message || "Failed.", false);
   };
 
   const handleFreezeWallet = async () => {
@@ -447,7 +406,6 @@ export function AdminUserDetail() {
   // Profile picture: /user_profiles/<id> carries it, /users/<id> mirrors it as avatar_url.
   const avatarUrl     = profile?.avatar_url || userData?.avatar_url || "";
   const displayStatus = userData?.status       || "—";
-  const displayPlan   = subscription?.plan?.plan_name || "Free";
   const displayCountry= profile?.country       || userData?.country || "—";
   const displayJoined = userData?.created_on
     ? new Date(userData.created_on).toLocaleDateString()   : "—";
@@ -579,34 +537,6 @@ export function AdminUserDetail() {
           />
         )}
 
-        {modal === "upgrade" && (
-          <ConfirmModal
-            title="Upgrade Subscription Plan"
-            desc="Select a plan to assign to this user:"
-            confirmLabel="Upgrade"
-            confirmCls="bg-violet-600 hover:bg-violet-500"
-            loading={modalLoading}
-            onConfirm={handleUpgradePlan}
-            onClose={() => { setModal(null); setModalInput(""); }}
-          >
-            <div className="relative">
-              <select
-                value={modalInput}
-                onChange={(e) => setModalInput(e.target.value)}
-                className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-gray-200 focus:outline-none focus:border-white/20 appearance-none"
-              >
-                <option value="">— Select a plan —</option>
-                {plans.map((p) => (
-                  <option key={p.plan_id} value={p.plan_id}>
-                    {p.plan_name} — ₹{p.price_monthly}/mo
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500 pointer-events-none" />
-            </div>
-          </ConfirmModal>
-        )}
-
         {modal === "freeze_wallet" && (
           <ConfirmModal
             title="Freeze Wallet"
@@ -733,9 +663,6 @@ export function AdminUserDetail() {
               <h1 className="text-2xl font-bold text-white">{displayName}</h1>
               <span className={`text-xs px-2.5 py-1 rounded-full border ${statusCls[displayStatus] || statusCls.Inactive}`}>
                 {displayStatus}
-              </span>
-              <span className={`text-xs px-2.5 py-1 rounded-full ${planCls(displayPlan)}`}>
-                {displayPlan} Plan
               </span>
               {userData?.is_email_verified && (
                 <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
@@ -890,7 +817,6 @@ export function AdminUserDetail() {
                   { label: "User ID",       value: userData?.user_id || userId },
                   { label: "Username",      value: userData?.username || "—" },
                   { label: "Role",          value: userData?.role || "USER" },
-                  { label: "Plan",          value: displayPlan },
                   { label: "Status",        value: displayStatus },
                   { label: "Country",       value: displayCountry },
                   { label: "Phone",         value: profile?.phone_number || "—" },
@@ -925,20 +851,6 @@ export function AdminUserDetail() {
                   )}
                 </div>
 
-                <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-5">
-                  <div className="text-sm font-medium text-white mb-3">Subscription</div>
-                  {[
-                    { label: "Plan",          value: displayPlan },
-                    { label: "Status",        value: subscription?.status || "FREE" },
-                    { label: "Billing",       value: subscription?.billing_cycle || "—" },
-                    { label: "Period End",    value: subscription?.current_period_end ? new Date(subscription.current_period_end).toLocaleDateString() : "—" },
-                  ].map((item, i) => (
-                    <div key={i} className="flex justify-between py-1.5 border-b border-white/5 last:border-0">
-                      <span className="text-xs text-gray-600">{item.label}</span>
-                      <span className="text-xs text-white">{item.value}</span>
-                    </div>
-                  ))}
-                </div>
               </div>
             </div>
           </div>
@@ -980,10 +892,6 @@ export function AdminUserDetail() {
             <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-5">
               <div className="text-sm font-medium text-white mb-4">Admin Actions</div>
               <div className="space-y-2">
-                <button onClick={()=>setModal("upgrade")}
-                  className="w-full py-2.5 flex items-center gap-2 justify-center rounded-xl text-sm border bg-violet-500/10 border-violet-500/20 text-violet-300 hover:bg-violet-500/20 transition-all">
-                  <Crown className="w-3.5 h-3.5" /> Upgrade Plan
-                </button>
                 <button onClick={()=>setModal("reset_pw")}
                   className="w-full py-2.5 flex items-center gap-2 justify-center rounded-xl text-sm border bg-cyan-500/10 border-cyan-500/20 text-cyan-300 hover:bg-cyan-500/20 transition-all">
                   <KeyRound className="w-3.5 h-3.5" /> Reset Password

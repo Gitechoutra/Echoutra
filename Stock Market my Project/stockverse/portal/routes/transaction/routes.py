@@ -97,6 +97,37 @@ def _txn_dict(t: Transactions) -> dict:
     }
 
 
+def _wallet_as_txn_dict(w: WalletTransactions) -> dict:
+    """Normalise a WalletTransactions row into the same shape as a Transactions
+    row, so wallet deposits/withdrawals can appear in the unified transaction
+    history alongside trades."""
+    net = w.net_amount if w.net_amount is not None else w.amount
+    return {
+        'txn_id':           f'W{w.wallet_txn_id}',   # prefixed — never collides with a trade txn_id
+        'user_id':          w.user_id,
+        'txn_type':         w.transaction_type,       # DEPOSIT / WITHDRAWAL
+        'txn_status':       w.status,
+        'stock_id':         None,
+        'ticker_symbol':    None,
+        'company_name':     None,
+        'logo_url':         None,
+        'order_id':         None,
+        'portfolio_id':     None,
+        'wallet_txn_id':    w.wallet_txn_id,
+        'quantity':         None,
+        'price_per_unit':   None,
+        'gross_amount':     float(w.amount or 0),
+        'fee':              float(w.fee or 0),
+        'tax':              0.0,
+        'net_amount':       float(net or 0),
+        'currency':         w.currency,
+        'description':      w.description,
+        'reference_number': w.external_reference,
+        'transacted_at':    str(w.completed_at or w.created_on),
+        'created_on':       str(w.created_on),
+    }
+
+
 def _apply_filters(query, args, user_id=None):
     """Apply common query filters to a Transactions query."""
     if user_id:
@@ -141,27 +172,52 @@ class MyTransactions(Resource):
             args     = list_parser.parse_args(strict=False)
             page     = max(1, args['page'])
             per_page = min(100, args['per_page'])
+            ttype    = (args.get('type') or '').upper()
 
-            query = Transactions.query
-            query = _apply_filters(query, args, user_id=user_id)
+            # DEPOSIT / WITHDRAWAL live in the wallet_transactions table, not the
+            # trades table — this endpoint merges both so the history is complete.
+            WALLET_TYPES = {'DEPOSIT', 'WITHDRAWAL'}
+            rows = []
 
-            # Sort
-            sort_col = getattr(Transactions,
-                               args.get('sort_by', 'transacted_at'),
-                               Transactions.transacted_at)
-            query = query.order_by(
-                sort_col.desc() if args.get('order', 'desc') == 'desc'
-                else sort_col.asc()
-            )
+            # ── Trades (skip when a wallet-only type is requested) ──
+            if ttype not in WALLET_TYPES:
+                tq = _apply_filters(Transactions.query, args, user_id=user_id)
+                rows.extend(_txn_dict(t) for t in tq.all())
 
-            paginated = query.paginate(page=page, per_page=per_page, error_out=False)
+            # ── Wallet deposits/withdrawals (when no type filter or a wallet type) ──
+            # Only DEPOSIT/WITHDRAWAL — trade cash-movements (BUY_STOCK, SELL_STOCK,
+            # FEE, …) are already represented by their Transactions rows, so pulling
+            # them in here would create duplicate rows with no stock symbol.
+            if not ttype or ttype in WALLET_TYPES:
+                wq = WalletTransactions.query.filter(
+                    WalletTransactions.user_id == user_id,
+                    WalletTransactions.transaction_type.in_(list(WALLET_TYPES)),
+                )
+                if ttype in WALLET_TYPES:
+                    wq = wq.filter(WalletTransactions.transaction_type == ttype)
+                if args.get('status'):
+                    wq = wq.filter(WalletTransactions.status == args['status'].upper())
+                if args.get('from_date'):
+                    wq = wq.filter(WalletTransactions.created_on >= datetime.fromisoformat(args['from_date']))
+                if args.get('to_date'):
+                    wq = wq.filter(WalletTransactions.created_on <= datetime.fromisoformat(args['to_date'] + 'T23:59:59'))
+                rows.extend(_wallet_as_txn_dict(w) for w in wq.all())
+
+            # Newest first (both tables share the ISO 'transacted_at' string)
+            rows.sort(key=lambda r: r.get('transacted_at') or r.get('created_on') or '',
+                      reverse=(args.get('order', 'desc') != 'asc'))
+
+            total       = len(rows)
+            start       = (page - 1) * per_page
+            page_rows   = rows[start:start + per_page]
+            total_pages = (total + per_page - 1) // per_page if per_page else 1
 
             return jsonify(bool=True, status=200, response={
-                'transactions': [_txn_dict(t) for t in paginated.items],
-                'total':        paginated.total,
+                'transactions': page_rows,
+                'total':        total,
                 'page':         page,
                 'per_page':     per_page,
-                'total_pages':  paginated.pages,
+                'total_pages':  total_pages,
             })
 
         except Exception as e:

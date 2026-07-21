@@ -62,10 +62,7 @@ export function AdminAnalytics() {
   const [userGrowth, setUserGrowth] = useState([]);
   const [tradeVolume, setTradeVolume] = useState([]);
   const [revenueBreak, setRevenueBreak] = useState([
-    { name: "Pro Subs",     value: 48, color: "#06B6D4" },
-    { name: "Elite Subs",   value: 31, color: "#8B5CF6" },
-    { name: "Trading Fees", value: 14, color: "#F59E0B" },
-    { name: "Other",        value:  7, color: "#6B7280" },
+    { name: "Commission", value: 100, color: "#06B6D4" },
   ]);
   const [countryData, setCountryData] = useState([]);
   const [leaderboard, setLeaderboard] = useState([]);

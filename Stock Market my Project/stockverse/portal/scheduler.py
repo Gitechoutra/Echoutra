@@ -146,3 +146,15 @@ def _refresh_portfolio_pnl():
     summary = snapshot_all_portfolios()
     logger.debug(f'[scheduler] portfolio P&L + snapshot: '
                  f'{summary["written"]} written, {summary["errors"]} error(s).')
+
+    # Rebuild per-stock popularity metrics (holders, platform AUM, rank) from the
+    # freshly-revalued holdings, so the admin Dashboard "Top Stocks by Platform AUM"
+    # and All-Stocks "Most Held / Total Positions" cards stay current.
+    try:
+        from portal.helpers.stock_analytics_engine import recompute_stock_analytics
+        stats = recompute_stock_analytics()
+        logger.debug(f'[scheduler] stock analytics: {stats}')
+    except Exception as e:
+        from portal import db
+        db.session.rollback()
+        logger.error(f'[scheduler] stock analytics recompute failed: {e}')

@@ -45,7 +45,7 @@ const fmtMoney = (value, currency = "INR", { compact = false, decimals = 0 } = {
 export function UserDashboard() {
   const navigate = useNavigate();
   const { user }  = useAuth();
-  const [tf, setTf] = useState("3M");
+  const [tf, setTf] = useState("1W");
   const tfs = ["1W", "1M", "3M", "6M", "ALL"];
 
   const [summary,       setSummary]       = useState(null);

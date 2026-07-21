@@ -24,7 +24,6 @@ def _ensure_schema():
     additions = [
         ('trade_orders',       'trade_mode',       "VARCHAR(10) DEFAULT 'DELIVERY'"),
         ('portfolio_holdings', 'trade_mode',       "VARCHAR(10) DEFAULT 'DELIVERY'"),
-        ('subscription_plans', 'price_halfyearly', "DECIMAL(10,2) DEFAULT 0.00"),
     ]
     db_name = db.session.execute(text("SELECT DATABASE()")).scalar()
     for table, column, ddl in additions:
@@ -66,8 +65,6 @@ def _ensure_currency_inr():
 
     tables = [
         'stocks', 'wallets', 'transactions', 'wallet_transactions',
-        'subscription_plans', 'user_subscriptions', 'platform_revenue',
-        'billing_transactions',
     ]
     for table in tables:
         try:

@@ -20,9 +20,6 @@ def init_app(app):
         from .user_sessions import UserSessions, SessionStatus
         from .otp_verifications import OTPVerifications, OTPPurpose, OTPStatus
         from .login_history import LoginHistory, LoginStatus
-        from .subscription_plans import SubscriptionPlans, PlanTier, BillingCycle
-        from .user_subscriptions import UserSubscriptions, SubscriptionStatus
-        from .billing_transactions import BillingTransactions, TransactionStatus
         from .wallets import Wallets, WalletStatus
         from .wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
         from .payout_methods import PayoutMethods, PayoutMethodType
@@ -55,7 +52,6 @@ def init_app(app):
         from .user_dashboard_layouts import UserDashboardLayouts
         from .market_movers import MarketMovers, MoverCategory, MoverTimeframe
         from .sector_performance import SectorPerformance
-        from .platform_revenue import PlatformRevenue, RevenueType
         from .country_statistics import CountryStatistics
         from .system_health_logs import SystemHealthLogs, HealthStatus, ServiceType
         from .kyc_verifications import KYCVerifications, KYCStatus, DocumentType

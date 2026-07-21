@@ -109,7 +109,7 @@ export function LandingPage() {
             </span>
           </div>
           <div className="hidden md:flex items-center gap-8 text-sm text-gray-400">
-            {["Features", "Pricing", "Security", "About"].map((l) => (
+            {["Features", "Security", "About"].map((l) => (
               <a
                 key={l}
                 href="#"
@@ -154,7 +154,7 @@ export function LandingPage() {
               className="md:hidden overflow-hidden border-t border-white/5 bg-[#07091A]"
             >
               <div className="px-6 py-4 flex flex-col gap-4">
-                {["Features", "Pricing", "Security", "About"].map((l) => (
+                {["Features", "Security", "About"].map((l) => (
                   <a
                     key={l}
                     href="#"

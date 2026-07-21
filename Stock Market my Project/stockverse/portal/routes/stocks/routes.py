@@ -470,6 +470,15 @@ class RefreshAllLive(Resource):
             summary = refresh_stocks(stocks)
             db.session.commit()   # persist all successful updates in one commit
 
+            # Rebuild popularity metrics against the just-refreshed prices so the
+            # admin Dashboard / All-Stocks cards update in the same click.
+            try:
+                from portal.helpers.stock_analytics_engine import recompute_stock_analytics
+                recompute_stock_analytics()
+            except Exception:
+                db.session.rollback()
+                traceback.print_exc()
+
             msg = f"Refreshed {summary['updated']} of {summary['total']} stock(s) from live Upstox data."
             if summary.get('token_expired'):
                 msg += (" The Upstox access token has expired — run "

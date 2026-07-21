@@ -23,7 +23,6 @@ def run_all_seeders():
 
         1. seed_roles        → ADMIN + USER rows must exist first
         2. seed_admin        → admin user needs ADMIN role to exist
-        3. seed_subscription_plans → plans must exist before any user subscribes
         4. seed_news_categories    → categories must exist before any news article
         5. seed_dashboard_widgets  → widgets must exist before any layout is saved
         6. seed_admin_settings     → platform config key-values
@@ -49,14 +48,6 @@ def run_all_seeders():
         seed_admin()
     except Exception as e:
         logger.error(f"[Seeders] seed_admin FAILED: {e}")
-        raise
-
-    # 3. Subscription plans (no dependencies)
-    try:
-        from portal.seeders.seed_subscription_plans import seed_subscription_plans
-        seed_subscription_plans()
-    except Exception as e:
-        logger.error(f"[Seeders] seed_subscription_plans FAILED: {e}")
         raise
 
     # 4. News categories (no dependencies)

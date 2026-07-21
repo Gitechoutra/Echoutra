@@ -35,15 +35,6 @@ const nav = [
   { path: "/admin/settings", label: "Settings",   icon: Settings },
 ];
 
-const FALLBACK_INDICES = [
-  { name: "S&P 500", value: "5,248.49", change: "+0.87%", up: true  },
-  { name: "NASDAQ",  value: "16,428.82",change: "+1.15%", up: true  },
-  { name: "DOW",     value: "39,127.14",change: "+0.32%", up: true  },
-  { name: "VIX",     value: "13.47",    change: "-2.34%", up: false },
-  { name: "FTSE",    value: "8,127.63", change: "+0.55%", up: true  },
-  { name: "NIKKEI",  value: "39,523.55",change: "+0.43%", up: true  },
-];
-
 /* ══════════════════════════════════════════════════════════════════════════ */
 export function AdminLayout() {
   const navigate  = useNavigate();
@@ -60,12 +51,13 @@ export function AdminLayout() {
   const [profileOpen,   setProfileOpen]   = useState(false);
   const [sidebarMenu,   setSidebarMenu]   = useState(false);
   const [searchResults, setSearchResults] = useState([]);
-  const [marketIndices, setMarketIndices] = useState(FALLBACK_INDICES);
+  const [marketIndices, setMarketIndices] = useState([]);   // live stock prices, filled on mount
   const [userProfile,   setUserProfile]   = useState(null);
   const [popups,        setPopups]        = useState([]);   // transient toasts for arriving alerts
 
   const fetchNotifRef    = useRef(null);
   const notifIntervalRef = useRef(null);
+  const marketIntervalRef = useRef(null);
   const notifRef         = useRef(null);   // wraps the bell + dropdown for click-outside
 
   /* Notification ids already surfaced as a popup. The first fetch only primes
@@ -108,41 +100,21 @@ export function AdminLayout() {
     const token = getToken();
     if (!token) return;
     try {
-      const res  = await fetch(`${API_BASE}/admin/analytics/sector_performance`, {
+      /* Live prices straight from the stocks feed — real, moving prices. */
+      const res = await fetch(`${API_BASE}/stocks/list?per_page=25&sort_by=current_price&order=desc`, {
         headers: authHdr(),
       });
       if (res.ok) {
-        const data    = await res.json();
-        const sectors = data?.response?.sectors || [];
-        if (sectors.length > 0) {
+        const data   = await res.json();
+        const stocks = data?.response?.stocks || [];
+        const priced = stocks.filter((s) => s.current_price != null);
+        if (priced.length > 0) {
           setMarketIndices(
-            sectors.slice(0, 6).map((s) => {
-              const chg = s.day_change_percent || 0;
+            priced.slice(0, 14).map((s) => {
+              const chg = Number(s.price_change_percent ?? 0);
               return {
-                name:   s.sector_name || "—",
-                value:  `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
-                change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
-                up:     chg >= 0,
-              };
-            })
-          );
-          return;
-        }
-      }
-
-      const res2  = await fetch(`${API_BASE}/dashboard/admin/platform_summary`, {
-        headers: authHdr(),
-      });
-      if (res2.ok) {
-        const data2   = await res2.json();
-        const sectors = data2?.response?.sectors || [];
-        if (sectors.length > 0) {
-          setMarketIndices(
-            sectors.slice(0, 6).map((s) => {
-              const chg = s.day_change_percent || 0;
-              return {
-                name:   s.sector_name || "—",
-                value:  `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
+                name:   s.ticker_symbol || "—",
+                value:  `₹${Number(s.current_price).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`,
                 change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
                 up:     chg >= 0,
               };
@@ -151,7 +123,7 @@ export function AdminLayout() {
         }
       }
     } catch {
-      /* Keep existing indices */
+      /* Keep last-known ticker values */
     }
   }, []);
 
@@ -244,9 +216,20 @@ export function AdminLayout() {
       }
     }, 30_000);
 
+    /* Refresh the live price ticker every 20 seconds */
+    marketIntervalRef.current = setInterval(() => {
+      if (getToken()) fetchMarketTicker();
+      else {
+        clearInterval(marketIntervalRef.current);
+        marketIntervalRef.current = null;
+      }
+    }, 20_000);
+
     return () => {
       clearInterval(notifIntervalRef.current);
       notifIntervalRef.current = null;
+      clearInterval(marketIntervalRef.current);
+      marketIntervalRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 

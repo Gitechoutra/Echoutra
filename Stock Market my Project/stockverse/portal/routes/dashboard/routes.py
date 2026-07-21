@@ -580,20 +580,20 @@ class AdminPlatformSummary(Resource):
                 .filter_by(is_active=True).scalar() or 0
             )
 
-            from portal.models.platform_revenue import PlatformRevenue
+            from portal.models.transactions import Transactions, TxnType, TxnStatus
             rev_30d = float(
-                db.session.query(func.sum(PlatformRevenue.net_revenue))
-                .filter(PlatformRevenue.snapshot_date >= last_30d)
-                .scalar() or 0
+                db.session.query(func.sum(Transactions.fee))
+                .filter(
+                    Transactions.txn_type.in_([TxnType.BUY, TxnType.SELL]),
+                    Transactions.txn_status == TxnStatus.COMPLETED,
+                    Transactions.transacted_at >= datetime.combine(last_30d, datetime.min.time()),
+                ).scalar() or 0
             )
 
             filled_today = TradeOrders.query.filter(
                 TradeOrders.submitted_at >= datetime.combine(today, datetime.min.time()),
                 TradeOrders.order_status == OrderStatus.FILLED
             ).count()
-
-            from portal.models.user_subscriptions import UserSubscriptions, SubscriptionStatus
-            paid_subs = UserSubscriptions.query.filter_by(status=SubscriptionStatus.ACTIVE).count()
 
             return jsonify(bool=True, status=200, response={
                 'total_users':      total_users,
@@ -603,7 +603,6 @@ class AdminPlatformSummary(Resource):
                 'total_aum':        round(total_aum, 2),
                 'revenue_30d':      round(rev_30d, 2),
                 'trades_today':     filled_today,
-                'paid_subscribers': paid_subs,
                 'as_of':            str(datetime.now(timezone.utc)),
             })
 
@@ -627,7 +626,6 @@ class AdminRecentUsers(Resource):
             limit = min(50, max(1, args['limit']))
 
             from portal.models.users import Users
-            from portal.models.user_subscriptions import UserSubscriptions
             users = (Users.query
                      .order_by(Users.created_on.desc())
                      .limit(limit).all())
@@ -642,13 +640,6 @@ class AdminRecentUsers(Resource):
                     'status':      u.status,
                     'country':     u.profile.country if u.profile else None,
                     'avatar_url':  u.profile.avatar_url if u.profile else None,
-                    'plan':        (u.subscriptions
-                                    .filter_by(status='ACTIVE')
-                                    .order_by(UserSubscriptions.created_on.desc())
-                                    .first()
-                                    .plan.plan_tier
-                                    if u.subscriptions.filter_by(status='ACTIVE').first()
-                                    else 'FREE'),
                     'last_login':  str(u.last_login) if u.last_login else None,
                     'created_on':  str(u.created_on),
                 } for u in users],
@@ -660,53 +651,9 @@ class AdminRecentUsers(Resource):
             return jsonify(bool=False, status=500, response={'message': str(e)})
 
 
-@ns.route('/admin/plan_distribution')
-class AdminPlanDistribution(Resource):
-    @ns.doc(description='[ADMIN] Plan distribution donut chart data for admin dashboard.')
-    @jwt_required()
-    def get(self):
-        try:
-            if not _is_admin():
-                return jsonify(bool=False, status=403, response={'message': 'Admin access required.'})
-
-            from portal.models.user_subscriptions import UserSubscriptions, SubscriptionStatus
-            from portal.models.subscription_plans  import SubscriptionPlans
-            from portal import db
-            from sqlalchemy import func
-
-            rows = (db.session
-                    .query(SubscriptionPlans.plan_tier, func.count(UserSubscriptions.subscription_id))
-                    .join(UserSubscriptions, UserSubscriptions.plan_id == SubscriptionPlans.plan_id)
-                    .filter(UserSubscriptions.status == SubscriptionStatus.ACTIVE)
-                    .group_by(SubscriptionPlans.plan_tier)
-                    .all())
-
-            dist     = {r[0]: r[1] for r in rows}
-            total    = sum(dist.values())
-            # Users without any active subscription are FREE
-            from portal.models.users import Users
-            all_users = Users.query.count()
-            free_count = all_users - total
-            dist['FREE'] = max(0, free_count)
-            total        = all_users
-
-            return jsonify(bool=True, status=200, response={
-                'distribution': [
-                    {'plan_tier': tier, 'count': count,
-                     'percent': round(count / total * 100, 2) if total else 0}
-                    for tier, count in dist.items()
-                ],
-                'total_users': total,
-            })
-
-        except Exception as e:
-            traceback.print_exc()
-            return jsonify(bool=False, status=500, response={'message': str(e)})
-
-
-#  
+#
 #  WATCHLIST WIDGET  (quick watchlist for dashboard)
-#  
+#
 
 @ns.route('/user/watchlist_widget')
 class WatchlistWidget(Resource):

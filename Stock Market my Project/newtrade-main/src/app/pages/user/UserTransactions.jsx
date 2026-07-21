@@ -36,7 +36,7 @@ const STATUS_CONFIG = {
   REVERSED:  { color: "text-gray-400",    Icon: XCircle     },
 };
 
-const FILTERS = ["All", "BUY", "SELL", "DIVIDEND", "DEPOSIT", "WITHDRAWAL", "FEE"];
+const FILTERS = ["All", "BUY", "SELL", "DIVIDEND", "DEPOSIT", "WITHDRAWAL"];
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 export function UserTransactions() {
@@ -127,12 +127,16 @@ export function UserTransactions() {
       if (!d) return;
       const m = d.slice(0, 7); // YYYY-MM
       if (!map[m]) map[m] = { month: d.slice(5, 7), buy: 0, sell: 0 };
-      const amt = parseFloat(t.net_amount || t.amount || 0);
+      // Use the absolute trade value so a buy shows as a positive "bought"
+      // bar (net_amount is signed and would otherwise cancel bars out).
+      const amt  = Math.abs(parseFloat(t.gross_amount ?? t.net_amount ?? t.amount ?? 0));
       const type = (t.transaction_type || t.txn_type || "").toUpperCase();
       if (type === "BUY")  map[m].buy  += amt;
       if (type === "SELL") map[m].sell += amt;
     });
-    setMonthlyChart(Object.values(map).slice(-6));
+    // Chronological order, most recent 6 months.
+    const rows = Object.entries(map).sort(([a], [b]) => a.localeCompare(b)).map(([, v]) => v);
+    setMonthlyChart(rows.slice(-6));
   };
 
   /* ── Fetch detail ──────────────────────────────────────────────────────── */
@@ -312,16 +316,17 @@ export function UserTransactions() {
           <div className="text-sm font-medium text-white mb-4">Monthly Activity</div>
           <div className="h-36">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={monthlyChart} barSize={16} barGap={4}>
+              <BarChart data={monthlyChart} barGap={6} barCategoryGap="35%">
                 <XAxis dataKey="month" tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} />
                 <YAxis tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false}
-                  tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
+                  width={44} tickFormatter={v => `₹${(v / 1000).toFixed(0)}k`} />
                 <Tooltip
+                  cursor={{ fill: "rgba(255,255,255,.03)" }}
                   contentStyle={{ background: "#0C1220", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, fontSize: 11 }}
                   formatter={(v, name) => [`₹${parseFloat(v).toLocaleString("en", { maximumFractionDigits: 0 })}`, name === "buy" ? "Bought" : "Sold"]}
                 />
-                <Bar dataKey="buy"  radius={[3, 3, 0, 0]} fill="#10B981" />
-                <Bar dataKey="sell" radius={[3, 3, 0, 0]} fill="#EF4444" />
+                <Bar dataKey="buy"  radius={[3, 3, 0, 0]} fill="#10B981" maxBarSize={36} />
+                <Bar dataKey="sell" radius={[3, 3, 0, 0]} fill="#EF4444" maxBarSize={36} />
               </BarChart>
             </ResponsiveContainer>
           </div>
@@ -446,7 +451,7 @@ export function UserTransactions() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-white/5">
-                    {["Date", "Type", "Symbol", "Quantity", "Price", "Amount", "Fee", "Net Amount", "Status"].map(h => (
+                    {["Date", "Type", "Symbol", "Quantity", "Price", "Amount", "Net Amount", "Status"].map(h => (
                       <th key={h} className="px-5 py-3 text-left text-xs text-gray-600 font-medium">{h}</th>
                     ))}
                   </tr>
@@ -494,10 +499,7 @@ export function UserTransactions() {
                           {t.price_per_unit ? `₹${parseFloat(t.price_per_unit).toFixed(2)}` : "—"}
                         </td>
                         <td className="px-5 py-3.5 text-sm text-white">
-                          {fmtAmt(t.amount)}
-                        </td>
-                        <td className="px-5 py-3.5 text-sm text-gray-500">
-                          {t.fee ? fmtAmt(t.fee) : "—"}
+                          {fmtAmt(t.amount ?? t.gross_amount)}
                         </td>
                         <td className={`px-5 py-3.5 text-sm font-medium ${up ? "text-emerald-400" : "text-red-400"}`}>
                           {up ? "+" : "-"}{fmtAmt(t.net_amount || t.amount)}

@@ -48,7 +48,6 @@ class Users(db.Model):
     sessions = db.relationship('UserSessions', back_populates='user', lazy='dynamic')
     otp_verifications = db.relationship('OTPVerifications', back_populates='user', lazy='dynamic')
     login_history = db.relationship('LoginHistory', back_populates='user', lazy='dynamic')
-    subscriptions = db.relationship('UserSubscriptions', back_populates='user', lazy='dynamic')
     wallets = db.relationship('Wallets', back_populates='user', uselist=False)
     payout_methods = db.relationship('PayoutMethods', back_populates='user', lazy='dynamic')
     portfolios = db.relationship('Portfolios', back_populates='user', lazy='dynamic')

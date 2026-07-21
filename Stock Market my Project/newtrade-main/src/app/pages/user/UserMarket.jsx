@@ -29,12 +29,6 @@ export function UserMarket() {
   const [page,      setPage]      = useState(1);
   const [totalPages,setTotalPages]= useState(1);
   const [movers,    setMovers]    = useState({ gainers: [], losers: [] });
-  const [indices,   setIndices]   = useState([
-    { n: "S&P 500", v: "5,248.49", c: "+0.87%", up: true },
-    { n: "NASDAQ",  v: "16,428.82",c: "+1.15%", up: true },
-    { n: "DOW",     v: "39,127.14",c: "+0.32%", up: true },
-    { n: "VIX",     v: "13.47",    c: "-2.34%", up: false },
-  ]);
 
   // `silent` = background refresh (no spinner / no error flash) — used by the
   // real-time polling loop so prices update live without a visible reload.
@@ -153,20 +147,6 @@ export function UserMarket() {
         <button onClick={() => fetchStocks(page)} className="p-2 rounded-xl bg-white/5 border border-white/10 text-gray-400 hover:text-white transition-colors">
           <RefreshCw className="w-4 h-4" />
         </button>
-      </div>
-
-      {/* Index summary */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {indices.map((m, i) => (
-          <div key={i} className={`bg-[#0C1220] border ${m.up ? "border-emerald-500/10" : "border-red-500/10"} rounded-2xl p-3.5`}>
-            <div className="text-xs text-gray-500 mb-1">{m.n}</div>
-            <div className="text-base font-bold text-white">{m.v}</div>
-            <div className={`text-xs mt-0.5 flex items-center gap-1 ${m.up ? "text-emerald-400" : "text-red-400"}`}>
-              {m.up ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
-              {m.c}
-            </div>
-          </div>
-        ))}
       </div>
 
       {/* Tabs */}

@@ -24,6 +24,7 @@ import { UserWatchlist } from "./pages/user/UserWatchlist";
 import { UserTrade } from "./pages/user/UserTrade";
 import { UserNews } from "./pages/user/UserNews";
 import { UserTransactions } from "./pages/user/UserTransactions";
+import { UserWallet } from "./pages/user/UserWallet";
 import { UserSettings } from "./pages/user/UserSettings";
 
 const withErrorBoundary = (Component) => {
@@ -69,6 +70,7 @@ export const router = createBrowserRouter([
       { path: "trade", Component: UserTrade },
       { path: "news", Component: UserNews },
       { path: "transactions", Component: UserTransactions },
+      { path: "wallet", Component: UserWallet },
       { path: "settings", Component: UserSettings },
     ],
   },

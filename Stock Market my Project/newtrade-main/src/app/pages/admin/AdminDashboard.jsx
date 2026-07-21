@@ -24,11 +24,6 @@ const fmtCurrency = (val) => {
   })}`;
 };
 
-const PLAN_COLORS = {
-  FREE: "#1E293B", BASIC: "#3B82F6", PRO: "#06B6D4",
-  PREMIUM: "#8B5CF6", ENTERPRISE: "#EC4899",
-};
-
 const makeDauData = (activeUsers = 0) =>
   ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].map((day, i) => ({
     day,
@@ -42,11 +37,6 @@ export function AdminDashboard() {
   /* ── Core dashboard data from /admin/dashboard ── */
   const [dashData,    setDashData]    = useState(null);
   const [txSummary,   setTxSummary]   = useState(null);  // /transactions/admin/summary
-  const [planDist,    setPlanDist]    = useState([
-    { name: "Free",  value: 0, rawCount: 0, color: "#1E293B" },
-    { name: "Pro",   value: 0, rawCount: 0, color: "#06B6D4" },
-    { name: "Elite", value: 0, rawCount: 0, color: "#8B5CF6" },
-  ]);
   const [recentUsers, setRecentUsers] = useState([]);
   const [dauData,     setDauData]     = useState(makeDauData());
   const [loading,     setLoading]     = useState(true);
@@ -61,9 +51,8 @@ export function AdminDashboard() {
 
     try {
       /* Fire requests in parallel — /transactions/admin/summary gives tx stats */
-      const [dashRes, planRes, recentRes, txRes] = await Promise.all([
+      const [dashRes, recentRes, txRes] = await Promise.all([
         fetch(`${API_BASE}/admin/dashboard`,                   { headers: authHdr() }),
-        fetch(`${API_BASE}/dashboard/admin/plan_distribution`, { headers: authHdr() }),
         fetch(`${API_BASE}/dashboard/admin/recent_users`,      { headers: authHdr() }),
         fetch(`${API_BASE}/transactions/admin/summary`,        { headers: authHdr() }),
       ]);
@@ -73,8 +62,8 @@ export function AdminDashboard() {
         navigate("/signin?role=admin"); return;
       }
 
-      const [dashJson, planJson, recentJson, txJson] = await Promise.all([
-        dashRes.json(), planRes.json(), recentRes.json(), txRes.json(),
+      const [dashJson, recentJson, txJson] = await Promise.all([
+        dashRes.json(), recentRes.json(), txRes.json(),
       ]);
 
       if (!dashJson.bool) {
@@ -106,38 +95,6 @@ export function AdminDashboard() {
       /* Transaction summary from /transactions/admin/summary */
       if (txJson.bool && txJson.response) {
         setTxSummary(txJson.response);
-      }
-
-      /* ── Plan distribution ── */
-      if (planJson.bool) {
-        const raw = planJson.response?.distribution
-          || planJson.response?.plans
-          || planJson.response || [];
-
-        let distArr = [];
-        if (Array.isArray(raw) && raw.length > 0) {
-          distArr = raw;
-        } else if (resp.users?.plan_distribution) {
-          distArr = Object.entries(resp.users.plan_distribution).map(([name, count]) => ({
-            name, count, value: count,
-          }));
-        }
-
-        if (distArr.length > 0) {
-          const totalPlanUsers = distArr.reduce((s, p) => s + (p.count || p.value || 0), 0) || 1;
-          setPlanDist(
-            distArr.map((p) => {
-              const name  = (p.plan || p.plan_name || p.plan_tier || p.name || "").toUpperCase();
-              const count = p.count || p.value || 0;
-              return {
-                name:     name.charAt(0) + name.slice(1).toLowerCase(),
-                rawCount: count,
-                value:    Math.round((count / totalPlanUsers) * 100),
-                color:    PLAN_COLORS[name] || "#6B7280",
-              };
-            })
-          );
-        }
       }
 
       /* DAU from platform_stats if available */
@@ -360,33 +317,24 @@ export function AdminDashboard() {
           </div>
         </div>
 
-        {/* Plan distribution */}
+        {/* Revenue & activity summary */}
         <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-5">
-          <div className="text-xs text-gray-500 mb-1">Plan Distribution</div>
-          <div className="text-sm font-medium text-white mb-4">{totalUsers.toLocaleString()} users</div>
-          <div className="h-36 mb-4">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={planDist} cx="50%" cy="50%" innerRadius={38} outerRadius={64}
-                  dataKey="value" paddingAngle={3}>
-                  {planDist.map((e, i) => <Cell key={i} fill={e.color} />)}
-                </Pie>
-                <Tooltip
-                  contentStyle={{ background: "#0C1220", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, fontSize: 11 }}
-                  formatter={(v, _, { payload }) => [`${payload.rawCount} users (${v}%)`, payload.name]}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          {planDist.map((p, i) => (
-            <div key={i} className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 rounded-full" style={{ background: p.color }} />
-                <span className="text-xs text-gray-400">{p.name}</span>
+          <div className="text-xs text-gray-500 mb-1">Revenue & Activity</div>
+          <div className="text-sm font-medium text-white mb-4">Commission earned</div>
+          <div className="space-y-3">
+            {[
+              { label: "Revenue (30 days)", value: `₹${Number(rev30d).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, accent: "text-emerald-400" },
+              { label: "Revenue (7 days)",  value: `₹${Number(rev7d).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`,  accent: "text-cyan-400" },
+              { label: "Assets under mgmt", value: `₹${Number(totalAum).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`, accent: "text-violet-400" },
+              { label: "Trades today",      value: tradesToday.toLocaleString(), accent: "text-amber-400" },
+              { label: "Active users",      value: `${activeUsers.toLocaleString()} (${activePct}%)`, accent: "text-white" },
+            ].map((r, i) => (
+              <div key={i} className="flex items-center justify-between">
+                <span className="text-xs text-gray-400">{r.label}</span>
+                <span className={`text-sm font-semibold ${r.accent}`}>{r.value}</span>
               </div>
-              <span className="text-xs text-white">{p.rawCount} ({p.value}%)</span>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
 

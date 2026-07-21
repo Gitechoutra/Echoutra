@@ -34,7 +34,6 @@ from portal.models.admin_settings      import AdminSettings, SettingDataType
 from portal.models.admin_activity_logs import AdminActivityLogs
 from portal.models.transactions        import Transactions, TxnType, TxnStatus
 from portal.models.wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
-from portal.models.payment_transactions import PaymentTransactions, PaymentStatus
 from portal.models.users               import Users
 from portal.models.stocks              import Stocks
 
@@ -215,14 +214,6 @@ class FinanceOverview(Resource):
                 Transactions.fee > 0,
             ).scalar() or 0
 
-            # subscription revenue (real Razorpay payments)
-            total_subscription = _d(db.session.query(func.sum(PaymentTransactions.amount)).filter(
-                PaymentTransactions.status == PaymentStatus.COMPLETED,
-            ).scalar())
-            subscription_count = db.session.query(func.count(PaymentTransactions.payment_id)).filter(
-                PaymentTransactions.status == PaymentStatus.COMPLETED,
-            ).scalar() or 0
-
             # wallet money flow
             total_deposits = _d(db.session.query(func.sum(WalletTransactions.amount)).filter(
                 WalletTransactions.transaction_type == WalletTransactionType.DEPOSIT,
@@ -233,7 +224,7 @@ class FinanceOverview(Resource):
                 WalletTransactions.status == WalletTransactionStatus.COMPLETED,
             ).scalar())
 
-            company_earnings = total_commission + total_subscription
+            company_earnings = total_commission
 
             _, bank = _finance_setting('FINANCE_COMPANY_BANK_ACCOUNT')
 
@@ -242,8 +233,6 @@ class FinanceOverview(Resource):
                 'company_earnings':       round(company_earnings, 2),
                 'total_commission':       round(total_commission, 2),
                 'commission_count':       int(commission_count),
-                'total_subscription':     round(total_subscription, 2),
-                'subscription_count':     int(subscription_count),
                 'total_deposits':         round(total_deposits, 2),
                 'total_withdrawals':      round(total_withdrawals, 2),
                 'settled_to': {

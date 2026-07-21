@@ -7,7 +7,6 @@ from flask_restx import Namespace, Resource, reqparse
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 
 from portal.models.platform_statistics  import PlatformStatistics
-from portal.models.platform_revenue     import PlatformRevenue
 from portal.models.sector_performance   import SectorPerformance
 from portal.models.country_statistics   import CountryStatistics
 from portal.models.system_health_logs   import SystemHealthLogs, HealthStatus
@@ -21,7 +20,6 @@ from portal.models.portfolio_holdings   import PortfolioHoldings
 from portal.models.stocks               import Stocks
 from portal.models.stock_analytics      import StockAnalytics
 from portal.models.trade_orders         import TradeOrders, OrderStatus
-from portal.models.user_subscriptions   import UserSubscriptions, SubscriptionStatus
 from portal.models.market_movers        import MarketMovers
 
 from . import ns, logger
@@ -67,32 +65,26 @@ class AdminDashboard(Resource):
             new_today     = Users.query.filter(Users.created_on >= datetime.combine(today, datetime.min.time())).count()
             suspended     = Users.query.filter_by(status=UserStatus.SUSPENDED).count()
 
-            # Plan distribution
-            plan_dist = {}
-            subs = UserSubscriptions.query.filter_by(status=SubscriptionStatus.ACTIVE).all()
-            for s in subs:
-                tier = s.plan.plan_tier if s.plan else 'FREE'
-                plan_dist[tier] = plan_dist.get(tier, 0) + 1
-
             # AUM
             total_aum = 0.0
             for p in Portfolios.query.filter_by(is_active=True).all():
                 total_aum += float(p.current_value or 0)
 
-            # Revenue (last 30 days)
+            # Revenue = trading commission collected (Transactions.fee) per window.
             from sqlalchemy import func
             from portal import db
-            rev_30d = db.session.query(func.sum(PlatformRevenue.net_revenue)).filter(
-                PlatformRevenue.snapshot_date >= last_30d
-            ).scalar() or 0
+            from portal.models.transactions import Transactions, TxnType, TxnStatus
 
-            rev_7d = db.session.query(func.sum(PlatformRevenue.net_revenue)).filter(
-                PlatformRevenue.snapshot_date >= last_7d
-            ).scalar() or 0
+            def _commission_since(since):
+                return float(db.session.query(func.sum(Transactions.fee)).filter(
+                    Transactions.txn_type.in_([TxnType.BUY, TxnType.SELL]),
+                    Transactions.txn_status == TxnStatus.COMPLETED,
+                    Transactions.transacted_at >= since,
+                ).scalar() or 0)
 
-            rev_today = db.session.query(func.sum(PlatformRevenue.net_revenue)).filter(
-                PlatformRevenue.snapshot_date == today
-            ).scalar() or 0
+            rev_today = _commission_since(datetime.combine(today,    datetime.min.time()))
+            rev_7d    = _commission_since(datetime.combine(last_7d,  datetime.min.time()))
+            rev_30d   = _commission_since(datetime.combine(last_30d, datetime.min.time()))
 
             # Trade volume today
             trades_today = TradeOrders.query.filter(
@@ -116,7 +108,6 @@ class AdminDashboard(Resource):
                     'active':         active_users,
                     'new_today':      new_today,
                     'suspended':      suspended,
-                    'plan_distribution': plan_dist,
                 },
                 'financial': {
                     'total_aum':      round(total_aum, 2),
@@ -268,32 +259,40 @@ class RevenueAnalytics(Resource):
             args  = p.parse_args(strict=False)
             since = date.today() - timedelta(days=min(365, args['days']))
 
-            query = PlatformRevenue.query.filter(PlatformRevenue.snapshot_date >= since)
-            if args.get('revenue_type'):
-                query = query.filter(PlatformRevenue.revenue_type == args['revenue_type'].upper())
-
-            revenues = query.order_by(PlatformRevenue.snapshot_date.asc()).all()
-
-            # Aggregate totals
+            # Revenue is trading commission (Transactions.fee), grouped by day.
             from sqlalchemy import func
             from portal import db
-            totals = db.session.query(
-                PlatformRevenue.revenue_type,
-                func.sum(PlatformRevenue.net_revenue).label('total')
-            ).filter(PlatformRevenue.snapshot_date >= since).group_by(PlatformRevenue.revenue_type).all()
+            from portal.models.transactions import Transactions, TxnType, TxnStatus
 
+            rows = (db.session.query(
+                        func.date(Transactions.transacted_at).label('d'),
+                        func.sum(Transactions.fee).label('net'),
+                        func.count(Transactions.txn_id).label('cnt'),
+                    )
+                    .filter(
+                        Transactions.txn_type.in_([TxnType.BUY, TxnType.SELL]),
+                        Transactions.txn_status == TxnStatus.COMPLETED,
+                        Transactions.transacted_at >= datetime.combine(since, datetime.min.time()),
+                    )
+                    .group_by(func.date(Transactions.transacted_at))
+                    .order_by(func.date(Transactions.transacted_at).asc())
+                    .all())
+
+            data = [{
+                'date':             str(r.d),
+                'revenue_type':     'COMMISSION',
+                'gross_revenue':    float(r.net or 0),
+                'net_revenue':      float(r.net or 0),
+                'refunds':          0.0,
+                'transaction_count': int(r.cnt or 0),
+                'plan_breakdown':   None,
+            } for r in rows]
+
+            total = sum(d['net_revenue'] for d in data)
             return jsonify(bool=True, status=200, response={
-                'data': [{
-                    'date':             str(r.snapshot_date),
-                    'revenue_type':     r.revenue_type,
-                    'gross_revenue':    float(r.gross_revenue),
-                    'net_revenue':      float(r.net_revenue),
-                    'refunds':          float(r.refunds),
-                    'transaction_count':r.transaction_count,
-                    'plan_breakdown':   r.plan_breakdown,
-                } for r in revenues],
-                'totals_by_type': {t.revenue_type: float(t.total) for t in totals},
-                'count': len(revenues),
+                'data':            data,
+                'totals_by_type':  {'COMMISSION': round(total, 2)} if data else {},
+                'count':           len(data),
             })
 
         except Exception as e:
@@ -1079,19 +1078,6 @@ class PlatformStatsSnapshot(Resource):
             stat.new_users_today        = Users.query.filter(
                 Users.created_on >= datetime.combine(today, datetime.min.time())
             ).count()
-
-            # Plan breakdown
-            for tier, attr in [
-                ('FREE','free_plan_users'), ('BASIC','basic_plan_users'),
-                ('PRO','pro_plan_users'),   ('PREMIUM','premium_plan_users'),
-                ('ENTERPRISE','enterprise_plan_users')
-            ]:
-                count = (UserSubscriptions.query
-                         .join(UserSubscriptions.plan)
-                         .filter(UserSubscriptions.status == SubscriptionStatus.ACTIVE)
-                         .filter_by(plan_tier=tier)
-                         .count())
-                setattr(stat, attr, count)
 
             # AUM
             aum = db.session.query(func.sum(Portfolios.current_value)).filter_by(is_active=True).scalar() or 0

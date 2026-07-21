@@ -16,6 +16,7 @@ import {
   LogOut,
   ChevronDown,
   BarChart2,
+  Wallet,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { SupportChatWidget } from "../../components/SupportChatWidget";
@@ -37,6 +38,7 @@ const nav = [
   { path: "/user/trade",        label: "Trade",        icon: ArrowLeftRight },
   { path: "/user/news",         label: "News",         icon: Newspaper },
   { path: "/user/transactions", label: "Transactions", icon: BarChart2 },
+  { path: "/user/wallet",       label: "Wallet",       icon: Wallet },
   { path: "/user/settings",     label: "Settings",     icon: Settings },
 ];
 
@@ -59,13 +61,8 @@ export function UserLayout() {
   const [userProfile,   setUserProfile]   = useState(null);
   const [holdings,      setHoldings]      = useState([]);
 
-  /* ── Ticker indices — seeded with static fallback ── */
-  const [marketIndices, setMarketIndices] = useState([
-    { name: "S&P 500", value: "5,248.49", change: "+0.87%", up: true  },
-    { name: "NASDAQ",  value: "16,428.82",change: "+1.15%", up: true  },
-    { name: "DOW",     value: "39,127.14",change: "+0.32%", up: true  },
-    { name: "VIX",     value: "13.47",    change: "-2.34%", up: false },
-  ]);
+  /* ── Ticker: live stock prices, populated from the API on mount (no dummy data) ── */
+  const [marketIndices, setMarketIndices] = useState([]);
 
   /* Stable refs so interval closures always call the latest version */
   const fetchMarketRef = useRef(null);
@@ -94,47 +91,22 @@ export function UserLayout() {
     if (!token) return;
 
     try {
-      /* Primary — market overview */
-      const res  = await fetch(`${API_BASE}/dashboard/user/market_overview`, {
+      /* Live prices straight from the stocks feed (updated by the market-data
+         provider). This shows real, moving prices instead of static indices. */
+      const res = await fetch(`${API_BASE}/stocks/list?per_page=25&sort_by=current_price&order=desc`, {
         headers: authHdr(),
       });
-
       if (res.ok) {
-        const data = await res.json();
-        const raw  = data?.response || [];
-        if (Array.isArray(raw) && raw.length > 0) {
+        const data   = await res.json();
+        const stocks = data?.response?.stocks || [];
+        const priced = stocks.filter((s) => s.current_price != null);
+        if (priced.length > 0) {
           setMarketIndices(
-            raw.slice(0, 6).map((m) => {
-              const chg = m.change ?? m.change_pct ?? 0;
-              const up  = typeof chg === "number" ? chg >= 0 : !String(chg).startsWith("-");
+            priced.slice(0, 14).map((s) => {
+              const chg = Number(s.price_change_percent ?? 0);
               return {
-                name:   m.name      || m.index_name || "—",
-                value:  m.value     || m.current_value || "—",
-                change: typeof chg  === "number"
-                  ? `${up ? "+" : ""}${chg.toFixed(2)}%`
-                  : String(chg),
-                up,
-              };
-            })
-          );
-          return;
-        }
-      }
-
-      /* Fallback — sector performance */
-      const res2  = await fetch(`${API_BASE}/dashboard/sector_performance`, {
-        headers: authHdr(),
-      });
-      if (res2.ok) {
-        const data2   = await res2.json();
-        const sectors = data2?.response?.sectors || [];
-        if (sectors.length > 0) {
-          setMarketIndices(
-            sectors.slice(0, 4).map((s) => {
-              const chg = s.day_change_percent || 0;
-              return {
-                name:   s.sector_name || "—",
-                value:  `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
+                name:   s.ticker_symbol || "—",
+                value:  `₹${Number(s.current_price).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`,
                 change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
                 up:     chg >= 0,
               };
@@ -143,7 +115,7 @@ export function UserLayout() {
         }
       }
     } catch {
-      /* Keep existing fallback indices — no error log spam */
+      /* Keep last-known ticker values — no error log spam */
     }
   }, []); // ← stable — no deps that change
 
@@ -303,14 +275,14 @@ export function UserLayout() {
     const onProfileUpdated = () => fetchUserProfile();
     window.addEventListener("profile-updated", onProfileUpdated);
 
-    /* Refresh ticker every 5 minutes */
+    /* Refresh ticker every 20 seconds for a near-live feel */
     marketIntervalRef.current = setInterval(() => {
       if (getToken()) fetchMarketRef.current?.();
       else {
         clearInterval(marketIntervalRef.current);
         marketIntervalRef.current = null;
       }
-    }, 300_000); // 5 minutes
+    }, 20_000); // 20 seconds — live price ticker
 
     /* Refresh notifications every 30 seconds — this is the actual fix:
        admin-sent notifications now reach the bell without a page reload */
@@ -663,13 +635,6 @@ export function UserLayout() {
                       <div className="text-sm font-medium text-white truncate">{displayName}</div>
                       <div className="text-xs text-gray-500 truncate">{displayEmail}</div>
                     </div>
-                    <button
-                      onClick={() => { setProfileOpen(false); navigate("/user/settings"); }}
-                      className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
-                    >
-                      Security
-                    </button>
-                    <hr className="border-white/5 my-1" />
                     <button
                       onClick={() => { setProfileOpen(false); handleLogout(); }}
                       className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:text-red-400 hover:bg-white/5 transition-colors"

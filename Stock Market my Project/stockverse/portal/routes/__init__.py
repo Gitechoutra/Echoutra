@@ -24,7 +24,6 @@ def init_app():
     from .users import routes
     from .watchlists import routes
     from .trade_orders import routes
-    from .subscriptions import routes
     from .user_preferences import routes
     from .user_security import routes
     from .user_profiles import routes
