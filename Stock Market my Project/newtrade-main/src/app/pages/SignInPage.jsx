@@ -315,10 +315,18 @@ export function SignInPage() {
       localStorage.setItem("access_token",  access_token);
       if (refresh_token) localStorage.setItem("refresh_token", refresh_token);
 
-      // Validate role matches selected tab
+      // Validate the account's real role matches the selected login. This must
+      // be enforced BOTH ways: admin credentials cannot sign in through User
+      // Login, and user credentials cannot sign in through Admin Login. Without
+      // the symmetric check an admin could enter via the User tab (and vice
+      // versa) since routing was previously driven only by the server role.
       const actualRole = (userRole || "USER").toLowerCase();
-      if (role === "admin" && actualRole !== "admin") {
-        setError("This account does not have admin access.");
+      if (actualRole !== role) {
+        setError(
+          role === "admin"
+            ? "This account does not have admin access. Use User Login instead."
+            : "This is an admin account. Please use Admin Login."
+        );
         localStorage.removeItem("access_token");
         localStorage.removeItem("refresh_token");
         return;

@@ -14,6 +14,23 @@ import {
   LineChart,
   Menu,
   X,
+  Activity,
+  Wallet,
+  Sparkles,
+  Smartphone,
+  PlayCircle,
+  KeyRound,
+  BadgeCheck,
+  ShieldAlert,
+  Eye,
+  Quote,
+  Handshake,
+  Rocket,
+  Mail,
+  Phone,
+  Facebook,
+  Instagram,
+  Twitter,
 } from "lucide-react";
 import { AreaChart, Area, ResponsiveContainer } from "recharts";
 import { generateChartData } from "../data/mockData";
@@ -49,42 +66,91 @@ const features = [
   },
 ];
 
-const roleCards = [
+const navLinks = [
+  { label: "Features", href: "#features" },
+  { label: "Security", href: "#security" },
+  { label: "About", href: "#about" },
+];
+
+const featureHighlights = [
   {
-    role: "Admin",
-    label: "Platform Admin",
-    path: "/signin?role=admin",
-    icon: Users,
-    color: "from-violet-600 to-purple-700",
-    glow: "shadow-violet-500/20",
-    border: "border-violet-500/30",
-    bg: "bg-violet-500/10",
-    iconColor: "text-violet-300",
-    desc: "Full platform visibility. Manage all users, view every portfolio, access analytics & controls.",
-    perks: [
-      "View all user portfolios",
-      "User management & KYC",
-      "Platform-wide analytics",
-      "System configuration",
-    ],
+    icon: Activity,
+    title: "Live Market Data",
+    desc: "Streaming quotes, depth & candles from 50+ global exchanges with ms-level precision.",
+    color: "from-violet-500 to-purple-600",
   },
   {
-    role: "User",
-    label: "Investor / Trader",
-    path: "/signin?role=user",
-    icon: TrendingUp,
+    icon: Wallet,
+    title: "Portfolio Tracking",
+    desc: "Track holdings, P&L, allocation and performance across every account in real time.",
     color: "from-cyan-500 to-blue-600",
-    glow: "shadow-cyan-500/20",
-    border: "border-cyan-500/30",
-    bg: "bg-cyan-500/10",
-    iconColor: "text-cyan-300",
-    desc: "Your personal trading hub. See only your own investments, charts, and performance.",
-    perks: [
-      "Personal portfolio tracking",
-      "Real-time market data",
-      "Trade execution",
-      "Personalized alerts",
-    ],
+  },
+  {
+    icon: Sparkles,
+    title: "AI Insights",
+    desc: "Smart signals, trend detection and risk alerts powered by our AI engine.",
+    color: "from-amber-500 to-orange-600",
+  },
+  {
+    icon: Smartphone,
+    title: "Mobile-Friendly Tools",
+    desc: "A fully responsive experience — trade, monitor and manage from any device.",
+    color: "from-emerald-500 to-green-600",
+  },
+  {
+    icon: PlayCircle,
+    title: "Demo Account",
+    desc: "Practice risk-free with virtual funds before you commit real capital.",
+    color: "from-pink-500 to-rose-600",
+  },
+];
+
+const securityItems = [
+  {
+    icon: Lock,
+    title: "Data Encryption",
+    desc: "256-bit AES encryption in transit and at rest keeps your data private end to end.",
+  },
+  {
+    icon: KeyRound,
+    title: "Two-Factor Authentication",
+    desc: "Add an extra layer of protection with app-based and OTP 2FA on every login.",
+  },
+  {
+    icon: BadgeCheck,
+    title: "Regulatory Compliance",
+    desc: "Built to meet KYC, AML and market-regulator standards across the regions we serve.",
+  },
+  {
+    icon: ShieldAlert,
+    title: "Fraud Protection",
+    desc: "Continuous monitoring and anomaly detection to catch suspicious activity early.",
+  },
+  {
+    icon: Eye,
+    title: "Transparency",
+    desc: "Clear pricing, open audit trails and full visibility into every order and fee.",
+  },
+];
+
+const testimonials = [
+  {
+    quote:
+      "TradeFlow's real-time data and AI insights completely changed how I manage my portfolio.",
+    name: "Ananya Rao",
+    role: "Retail Investor",
+  },
+  {
+    quote:
+      "The demo account let my whole team onboard risk-free. Execution has been rock solid since.",
+    name: "Marcus Lee",
+    role: "Fund Manager",
+  },
+  {
+    quote:
+      "Security and transparency were my top concerns — TradeFlow delivered on both.",
+    name: "Priya Nair",
+    role: "Long-term Trader",
   },
 ];
 
@@ -109,13 +175,13 @@ export function LandingPage() {
             </span>
           </div>
           <div className="hidden md:flex items-center gap-8 text-sm text-gray-400">
-            {["Features", "Security", "About"].map((l) => (
+            {navLinks.map((l) => (
               <a
-                key={l}
-                href="#"
+                key={l.label}
+                href={l.href}
                 className="hover:text-white transition-colors"
               >
-                {l}
+                {l.label}
               </a>
             ))}
           </div>
@@ -154,14 +220,14 @@ export function LandingPage() {
               className="md:hidden overflow-hidden border-t border-white/5 bg-[#07091A]"
             >
               <div className="px-6 py-4 flex flex-col gap-4">
-                {["Features", "Security", "About"].map((l) => (
+                {navLinks.map((l) => (
                   <a
-                    key={l}
-                    href="#"
+                    key={l.label}
+                    href={l.href}
                     onClick={() => setMobileMenuOpen(false)}
                     className="text-sm font-medium text-gray-400 hover:text-white transition-colors"
                   >
-                    {l}
+                    {l.label}
                   </a>
                 ))}
                 <div className="h-px bg-white/5 my-1" />
@@ -281,7 +347,7 @@ export function LandingPage() {
             </div>
           </motion.div>
 
-          {/* Role selection cards */}
+          {/* Sign-in options */}
           <motion.div
             initial={{ opacity: 0, y: 30 }}
             animate={{ opacity: 1, y: 0 }}
@@ -289,62 +355,51 @@ export function LandingPage() {
             className="mb-6"
           >
             <div className="text-sm text-gray-500 mb-6">
-              Choose your access level
+              Choose how you'd like to sign in
             </div>
-            <div className="grid md:grid-cols-2 gap-5 max-w-3xl mx-auto">
-              {roleCards.map((card) => (
-                <motion.div
-                  key={card.role}
-                  whileHover={{ scale: 1.02, y: -4 }}
-                  onClick={() => navigate(card.path)}
-                  className={`relative cursor-pointer bg-[#0C1220] border ${card.border} rounded-2xl p-6 text-left hover:shadow-xl ${card.glow} transition-all duration-300 group`}
-                >
-                  <div
-                    className={`w-12 h-12 rounded-2xl bg-gradient-to-br ${card.color} flex items-center justify-center mb-4 shadow-lg`}
-                  >
-                    <card.icon className="w-6 h-6 text-white" />
+            <div className="grid sm:grid-cols-2 gap-4 max-w-2xl mx-auto">
+              <button
+                onClick={() => navigate("/signin?role=user")}
+                className="group flex items-center gap-4 bg-[#0C1220] border border-cyan-500/30 rounded-2xl p-5 text-left hover:shadow-xl hover:shadow-cyan-500/20 transition-all duration-300"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg flex-shrink-0">
+                  <TrendingUp className="w-6 h-6 text-white" />
+                </div>
+                <div className="flex-1">
+                  <div className="text-base font-bold text-white">
+                    User Login
                   </div>
-                  <div className="mb-1">
-                    <div
-                      className={`text-xs uppercase tracking-widest font-semibold ${card.iconColor} mb-1`}
-                    >
-                      {card.role}
-                    </div>
-                    <div className="text-lg font-bold text-white">
-                      {card.label}
-                    </div>
+                  <div className="text-xs text-gray-500">
+                    Investor / Trader portal
                   </div>
-                  <p className="text-sm text-gray-500 mb-4 leading-relaxed">
-                    {card.desc}
-                  </p>
-                  <ul className="space-y-1.5 mb-5">
-                    {card.perks.map((p) => (
-                      <li
-                        key={p}
-                        className="flex items-center gap-2 text-xs text-gray-400"
-                      >
-                        <div
-                          className={`w-1 h-1 rounded-full bg-gradient-to-r ${card.color}`}
-                        />
-                        {p}
-                      </li>
-                    ))}
-                  </ul>
-                  <div
-                    className={`flex items-center gap-2 text-sm font-medium bg-gradient-to-r ${card.color} bg-clip-text text-transparent group-hover:gap-3 transition-all`}
-                  >
-                    Enter as {card.role}
-                    <ArrowRight className={`w-4 h-4 ${card.iconColor}`} />
+                </div>
+                <ArrowRight className="w-4 h-4 text-cyan-300 group-hover:translate-x-1 transition-transform" />
+              </button>
+
+              <button
+                onClick={() => navigate("/signin?role=admin")}
+                className="group flex items-center gap-4 bg-[#0C1220] border border-violet-500/30 rounded-2xl p-5 text-left hover:shadow-xl hover:shadow-violet-500/20 transition-all duration-300"
+              >
+                <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-violet-600 to-purple-700 flex items-center justify-center shadow-lg flex-shrink-0">
+                  <Users className="w-6 h-6 text-white" />
+                </div>
+                <div className="flex-1">
+                  <div className="text-base font-bold text-white">
+                    Admin Login
                   </div>
-                </motion.div>
-              ))}
+                  <div className="text-xs text-gray-500">
+                    Platform administrator
+                  </div>
+                </div>
+                <ArrowRight className="w-4 h-4 text-violet-300 group-hover:translate-x-1 transition-transform" />
+              </button>
             </div>
           </motion.div>
         </div>
       </section>
 
       {/* Features */}
-      <section className="py-20 border-t border-white/5">
+      <section id="features" className="py-20 border-t border-white/5 scroll-mt-24">
         <div className="max-w-7xl mx-auto px-6">
           <div className="text-center mb-14">
             <div className="text-xs text-violet-400 uppercase tracking-widest mb-3">
@@ -376,6 +431,191 @@ export function LandingPage() {
                 </div>
               </motion.div>
             ))}
+          </div>
+
+          {/* Feature highlights */}
+          <div className="mt-16">
+            <div className="text-center mb-10">
+              <h3 className="text-2xl font-bold text-white mb-2">
+                Everything you need to trade smarter
+              </h3>
+              <p className="text-sm text-gray-500 max-w-xl mx-auto">
+                From live data to AI insights and a risk-free demo — a complete
+                toolkit in one platform.
+              </p>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              {featureHighlights.map((f, i) => (
+                <motion.div
+                  key={f.title}
+                  initial={{ opacity: 0, y: 20 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.08 }}
+                  className="bg-[#0C1220] border border-white/5 rounded-2xl p-6 hover:border-white/10 transition-all"
+                >
+                  <div
+                    className={`w-11 h-11 rounded-xl bg-gradient-to-br ${f.color} flex items-center justify-center mb-4`}
+                  >
+                    <f.icon className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="text-base font-semibold text-white mb-2">
+                    {f.title}
+                  </div>
+                  <div className="text-sm text-gray-500 leading-relaxed">
+                    {f.desc}
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Security */}
+      <section
+        id="security"
+        className="py-20 border-t border-white/5 scroll-mt-24 bg-gradient-to-b from-[#07091A] to-[#0C1220]"
+      >
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-14">
+            <div className="text-xs text-cyan-400 uppercase tracking-widest mb-3">
+              Security & Trust
+            </div>
+            <h2 className="text-3xl font-bold text-white mb-3">
+              Your money & data, protected
+            </h2>
+            <p className="text-sm text-gray-500 max-w-xl mx-auto">
+              Bank-level safeguards, regulatory compliance and full transparency
+              at every layer.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {securityItems.map((s, i) => (
+              <motion.div
+                key={s.title}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.08 }}
+                className="bg-[#0C1220] border border-white/5 rounded-2xl p-6 hover:border-cyan-500/20 transition-all"
+              >
+                <div className="w-11 h-11 rounded-xl bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center mb-4">
+                  <s.icon className="w-5 h-5 text-cyan-300" />
+                </div>
+                <div className="text-base font-semibold text-white mb-2">
+                  {s.title}
+                </div>
+                <div className="text-sm text-gray-500 leading-relaxed">
+                  {s.desc}
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* About */}
+      <section id="about" className="py-20 border-t border-white/5 scroll-mt-24">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="text-center mb-14">
+            <div className="text-xs text-violet-400 uppercase tracking-widest mb-3">
+              About TradeFlow
+            </div>
+            <h2 className="text-3xl font-bold text-white mb-3">
+              Built by traders, for traders
+            </h2>
+          </div>
+
+          {/* Story + reach */}
+          <div className="grid lg:grid-cols-2 gap-6 mb-12">
+            <div className="bg-[#0C1220] border border-white/5 rounded-2xl p-7">
+              <div className="w-11 h-11 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center mb-4">
+                <Rocket className="w-5 h-5 text-violet-300" />
+              </div>
+              <h3 className="text-lg font-semibold text-white mb-2">
+                Our Story
+              </h3>
+              <p className="text-sm text-gray-500 leading-relaxed">
+                TradeFlow was founded in 2020 with a simple mission: make
+                professional-grade trading tools accessible to everyone. What
+                began as a small team frustrated by clunky, expensive platforms
+                has grown into a trusted home for millions of traders worldwide.
+              </p>
+            </div>
+            <div
+              id="partnerships"
+              className="bg-[#0C1220] border border-white/5 rounded-2xl p-7 scroll-mt-24"
+            >
+              <div className="w-11 h-11 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center mb-4">
+                <Globe className="w-5 h-5 text-emerald-300" />
+              </div>
+              <h3 className="text-lg font-semibold text-white mb-2">
+                Global Reach & Partnerships
+              </h3>
+              <p className="text-sm text-gray-500 leading-relaxed">
+                Serving traders across 40+ countries and connected to 50+ global
+                exchanges. We partner with leading market-data providers,
+                clearing firms and financial institutions to deliver reliable,
+                low-latency access wherever you are.
+              </p>
+            </div>
+          </div>
+
+          {/* Team */}
+          <div className="mb-12">
+            <div className="flex items-center gap-2 mb-6">
+              <Users className="w-5 h-5 text-violet-300" />
+              <h3 className="text-lg font-semibold text-white">
+                Meet the Team
+              </h3>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
+              {[
+                { name: "Aarav Sharma", role: "Founder & CEO", i: "AS" },
+                { name: "Elena Petrova", role: "Chief Technology Officer", i: "EP" },
+                { name: "David Kim", role: "Head of Product", i: "DK" },
+                { name: "Sara Okafor", role: "Head of Security", i: "SO" },
+              ].map((m) => (
+                <div
+                  key={m.name}
+                  className="bg-[#0C1220] border border-white/5 rounded-2xl p-6 text-center"
+                >
+                  <div className="w-14 h-14 rounded-full bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center mx-auto mb-3 text-sm font-bold text-white">
+                    {m.i}
+                  </div>
+                  <div className="text-sm font-semibold text-white">
+                    {m.name}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5">{m.role}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Testimonials */}
+          <div id="testimonials" className="scroll-mt-24">
+            <div className="flex items-center gap-2 mb-6">
+              <Quote className="w-5 h-5 text-cyan-300" />
+              <h3 className="text-lg font-semibold text-white">
+                What our users say
+              </h3>
+            </div>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
+              {testimonials.map((t) => (
+                <div
+                  key={t.name}
+                  className="bg-[#0C1220] border border-white/5 rounded-2xl p-6"
+                >
+                  <Quote className="w-6 h-6 text-violet-400/40 mb-3" />
+                  <p className="text-sm text-gray-300 leading-relaxed mb-4">
+                    “{t.quote}”
+                  </p>
+                  <div className="text-sm font-semibold text-white">
+                    {t.name}
+                  </div>
+                  <div className="text-xs text-gray-500">{t.role}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       </section>
@@ -409,21 +649,174 @@ export function LandingPage() {
       </section>
 
       {/* Footer */}
-      <footer className="border-t border-white/5 py-10">
-        <div className="max-w-7xl mx-auto px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center">
-              <BarChart2 className="w-3.5 h-3.5 text-white" />
+      <footer className="border-t border-white/5 pt-14 pb-8 bg-[#07091A]">
+        <div className="max-w-7xl mx-auto px-6">
+          <div className="grid gap-10 md:grid-cols-6 mb-12">
+            {/* Brand */}
+            <div className="md:col-span-2">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-500 to-cyan-500 flex items-center justify-center">
+                  <BarChart2 className="w-4 h-4 text-white" />
+                </div>
+                <span className="font-black text-base">TradeFlow</span>
+                <span className="px-2 py-0.5 bg-violet-500/15 border border-violet-500/25 rounded-full text-xs text-violet-300 font-medium">
+                  PRO
+                </span>
+              </div>
+              <p className="text-sm text-gray-500 leading-relaxed max-w-xs mb-4">
+                Professional-grade trading for everyone — real-time data, AI
+                insights and bank-level security in one elegant platform.
+              </p>
+              <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                Serving traders in 40+ countries
+              </div>
             </div>
-            <span className="font-bold text-sm">TradeFlow</span>
+
+            {/* Product */}
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-4">
+                Product
+              </div>
+              <ul className="space-y-2.5 text-sm text-gray-500">
+                <li>
+                  <a href="#features" className="hover:text-white transition-colors">
+                    Live Market Data
+                  </a>
+                </li>
+                <li>
+                  <a href="#features" className="hover:text-white transition-colors">
+                    Portfolio Tracking
+                  </a>
+                </li>
+                <li>
+                  <a href="#features" className="hover:text-white transition-colors">
+                    AI Insights
+                  </a>
+                </li>
+                <li>
+                  <a href="#features" className="hover:text-white transition-colors">
+                    Demo Account
+                  </a>
+                </li>
+              </ul>
+            </div>
+
+            {/* Company */}
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-4">
+                Company
+              </div>
+              <ul className="space-y-2.5 text-sm text-gray-500">
+                <li>
+                  <a
+                    href="#partnerships"
+                    className="inline-flex items-center gap-1.5 hover:text-white transition-colors"
+                  >
+                    <Handshake className="w-3.5 h-3.5" /> Partnerships
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="#testimonials"
+                    className="hover:text-white transition-colors"
+                  >
+                    Testimonials
+                  </a>
+                </li>
+              </ul>
+            </div>
+
+            {/* Contact Us */}
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-4">
+                Contact Us
+              </div>
+              <ul className="space-y-2.5 text-sm text-gray-500">
+                <li>
+                  <a
+                    href="mailto:xxxxxx@gmail.com"
+                    className="inline-flex items-center gap-2 hover:text-white transition-colors"
+                  >
+                    <Mail className="w-3.5 h-3.5" /> xxxxxx@gmail.com
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="tel:+91XXXXXXXXX"
+                    className="inline-flex items-center gap-2 hover:text-white transition-colors"
+                  >
+                    <Phone className="w-3.5 h-3.5" /> +91 XXXXXXXXX
+                  </a>
+                </li>
+              </ul>
+              <div className="flex items-center gap-3 mt-4">
+                <a
+                  href="https://facebook.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Facebook"
+                  className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-gray-400 hover:text-white hover:border-white/20 transition-colors"
+                >
+                  <Facebook className="w-4 h-4" />
+                </a>
+                <a
+                  href="https://instagram.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Instagram"
+                  className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-gray-400 hover:text-white hover:border-white/20 transition-colors"
+                >
+                  <Instagram className="w-4 h-4" />
+                </a>
+                <a
+                  href="https://twitter.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Twitter"
+                  className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-gray-400 hover:text-white hover:border-white/20 transition-colors"
+                >
+                  <Twitter className="w-4 h-4" />
+                </a>
+                <a
+                  href="https://plus.google.com"
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Google Plus"
+                  className="w-8 h-8 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-sm font-bold text-gray-400 hover:text-white hover:border-white/20 transition-colors"
+                >
+                  G+
+                </a>
+              </div>
+            </div>
+
+            {/* Security */}
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-widest text-gray-400 mb-4">
+                Security
+              </div>
+              <ul className="space-y-2.5 text-sm text-gray-500">
+                <li>
+                  <a
+                    href="#security"
+                    className="hover:text-white transition-colors"
+                  >
+                    Data Encryption
+                  </a>
+                </li>
+              </ul>
+            </div>
           </div>
-          <div className="text-xs text-gray-700">
-            © 2026 TradeFlow Pro. Securities offered through TradeFlow
-            Securities LLC. Member FINRA/SIPC.
-          </div>
-          <div className="flex items-center gap-1">
-            <Lock className="w-3.5 h-3.5 text-gray-700" />
-            <span className="text-xs text-gray-700">256-bit encrypted</span>
+
+          <div className="border-t border-white/5 pt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="text-xs text-gray-600 text-center sm:text-left">
+              © 2026 TradeFlow Pro. Securities offered through TradeFlow
+              Securities LLC. Member FINRA/SIPC.
+            </div>
+            <div className="flex items-center gap-1">
+              <Lock className="w-3.5 h-3.5 text-gray-600" />
+              <span className="text-xs text-gray-600">256-bit encrypted</span>
+            </div>
           </div>
         </div>
       </footer>
