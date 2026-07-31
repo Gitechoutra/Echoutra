@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
@@ -12,6 +12,8 @@ import {
 } from "recharts";
 import { useAuth } from "../../context/AuthContext";
 import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
+import { useLiveQuotes, liveStocks, liveHoldings, livePortfolio } from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -45,17 +47,19 @@ const fmtMoney = (value, currency = "INR", { compact = false, decimals = 0 } = {
 export function UserDashboard() {
   const navigate = useNavigate();
   const { user }  = useAuth();
+  const { quotes } = useLiveQuotes();
   const [tf, setTf] = useState("1W");
   const tfs = ["1W", "1M", "3M", "6M", "ALL"];
 
   const [summary,       setSummary]       = useState(null);
-  const [portfolio,     setPortfolio]     = useState(null);
-  const [holdings,      setHoldings]      = useState([]);
+  // *Raw = as fetched; the live-overlaid values are derived below.
+  const [portfolioRaw,  setPortfolio]     = useState(null);
+  const [holdingsRaw,   setHoldings]      = useState([]);
   const [perfHistory,   setPerfHistory]   = useState([]);
   // True when the chart is showing today's value ticks rather than daily history.
   const [isIntraday,    setIsIntraday]    = useState(false);
-  const [myStocksToday, setMyStocksToday] = useState([]);
-  const [marketIndices, setMarketIndices] = useState([]);
+  const [myStocksRaw,   setMyStocksToday] = useState([]);
+  const [marketIndicesRaw, setMarketIndices] = useState([]);
   const [dailyPnl,      setDailyPnl]      = useState([]);
   const [wallet,        setWallet]        = useState(null);
   const [loading,       setLoading]       = useState(true);
@@ -185,6 +189,26 @@ export function UserDashboard() {
   }, []);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // ── Live overlay ──────────────────────────────────────────────────────────
+  // The dashboard fetched once on mount and then never moved. Every price-derived
+  // figure below (portfolio value, today's P&L, holdings cards, movers) now reads
+  // through these, so the whole page tracks the market from one shared poll.
+  const holdings      = useMemo(() => liveHoldings(holdingsRaw, quotes), [holdingsRaw, quotes]);
+  const portfolio     = useMemo(() => livePortfolio(portfolioRaw, holdings), [portfolioRaw, holdings]);
+  const myStocksToday = useMemo(() => liveStocks(myStocksRaw, quotes), [myStocksRaw, quotes]);
+  const marketIndices = useMemo(() => liveStocks(marketIndicesRaw, quotes), [marketIndicesRaw, quotes]);
+
+  // Biggest position first. Re-ranks as prices move, so the S.No column beside
+  // each row always reflects the current standing rather than load order.
+  const rankedHoldings = useMemo(() => {
+    const valueOf = (h) => {
+      const qty = parseFloat(h.quantity || 0);
+      const px  = parseFloat(h.current_price || 0) || parseFloat(h.average_buy_price || 0);
+      return parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : qty * px;
+    };
+    return [...holdings].sort((a, b) => valueOf(b) - valueOf(a));
+  }, [holdings]);
 
   const totalValue  = parseFloat(portfolio?.current_value           || summary?.portfolio?.current_value           || 0);
   const totalReturn = parseFloat(portfolio?.total_return            || summary?.portfolio?.total_return            || 0);
@@ -472,13 +496,13 @@ export function UserDashboard() {
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-white/5">
-                    {["Symbol", "Shares", "Avg Cost", "Current", "P&L", "Return"].map((h) => (
+                    {["#", "Symbol", "Shares", "Avg Cost", "Current", "P&L", "Return"].map((h) => (
                       <th key={h} className="px-5 py-2.5 text-left text-xs text-gray-600 font-medium">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {holdings.slice(0, 6).map((h) => {
+                  {rankedHoldings.slice(0, 6).map((h, idx) => {
                     const qty     = parseFloat(h.quantity             || 0);
                     const avgCost = parseFloat(h.average_buy_price    || 0);
                     const currPx  = parseFloat(h.current_price        || 0) > 0
@@ -502,15 +526,10 @@ export function UserDashboard() {
                         onClick={() => navigate(`/user/stock/${h.ticker_symbol}`)}
                         className="border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors"
                       >
+                        <td className="px-5 py-3 text-sm text-gray-500 tabular-nums">{idx + 1}</td>
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-2">
-                            {h.logo_url ? (
-                              <img src={h.logo_url} alt={h.ticker_symbol} className="w-6 h-6 rounded-lg object-contain bg-white/5" />
-                            ) : (
-                              <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-cyan-500/20 to-blue-600/20 flex items-center justify-center">
-                                <span className="text-xs font-bold text-cyan-400">{(h.ticker_symbol || "?").slice(0, 2)}</span>
-                              </div>
-                            )}
+                            <StockLogo symbol={h.ticker_symbol} name={h.company_name} size="xs" />
                             <div>
                               <div className="text-sm font-bold text-white">{h.ticker_symbol}</div>
                               <div className="text-xs text-gray-600">{h.sector || "—"}</div>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -11,6 +11,12 @@ import {
   validateQuantity, validatePrice, validateAmount,
   LIMITS,
 } from "../../utils/validation";
+import { MarketClosedNotice } from "../../components/MarketStatusBadge";
+import { useMarketStatus } from "../../hooks/useMarketStatus";
+import {
+  useLiveQuotes, liveStock, liveStocks, liveHoldings,
+} from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 
 
 const API_BASE     = "http://127.0.0.1:5050/v1";
@@ -50,6 +56,14 @@ const STATUS_CONFIG = {
 /* ══════════════════════════════════════════════════════════════════════ */
 export function UserTrade() {
   const navigate   = useNavigate();
+
+  /* Market session — server-owned. Orders are only accepted during continuous
+     trading (the window the server reports, Mon–Fri, excluding holidays). Before the first
+     status arrives we assume open and let the backend be the enforcement point,
+     so a slow status call never blocks a legitimate trade. */
+  const { status: marketStatus } = useMarketStatus();
+  const { quotes } = useLiveQuotes();
+  const tradingAllowed = marketStatus ? (marketStatus.trading_allowed ?? marketStatus.is_open) : true;
 
   /* ── Form state ── */
   const [tradeType,  setTradeType]  = useState("BUY");
@@ -182,18 +196,27 @@ export function UserTrade() {
   /* ════════════════════════════════════════════════════════
      DERIVED VALUES
   ════════════════════════════════════════════════════════ */
-  const filteredStocks = stocks.filter(s =>
+
+  /* Live overlay on everything price-derived. The selected stock's price feeds
+     the order preview (exec price, est. total, whether the wallet covers it), so
+     leaving it frozen at whatever it was when the page loaded meant reviewing an
+     order against a price that no longer existed. */
+  const liveStockList = useMemo(() => liveStocks(stocks, quotes), [stocks, quotes]);
+  const liveHeld      = useMemo(() => liveHoldings(holdings, quotes), [holdings, quotes]);
+  const selStockLive  = useMemo(() => liveStock(selStock, quotes), [selStock, quotes]);
+
+  const filteredStocks = liveStockList.filter(s =>
     (s.ticker_symbol || "").toLowerCase().includes(searchQ.toLowerCase()) ||
     (s.company_name  || "").toLowerCase().includes(searchQ.toLowerCase())
   ).slice(0, 8);
 
   /* For SELL — only show holdings the user owns */
-  const myHoldingSymbols = new Set(holdings.map(h => h.ticker_symbol));
+  const myHoldingSymbols = new Set(liveHeld.map(h => h.ticker_symbol));
   const sellableStocks   = filteredStocks.filter(s => myHoldingSymbols.has(s.ticker_symbol));
   const displayStocks    = tradeType === "SELL" ? sellableStocks : filteredStocks;
 
-  const stockCurrency = selStock?.currency || "INR";
-  const currentPrice  = parseFloat(selStock?.current_price || 0);
+  const stockCurrency = selStockLive?.currency || "INR";
+  const currentPrice  = parseFloat(selStockLive?.current_price || 0);
   const execPx        = orderType === "MARKET" ? currentPrice : parseFloat(limitPx || currentPrice.toString() || "0");
   const qtyNum        = parseInt(qty || "0") || 0;
 
@@ -216,10 +239,10 @@ export function UserTrade() {
   const hasSufficientFunds = tradeType === "SELL" || walletBalance >= orderTotal;
 
   /* Current holding of selected stock */
-  const myHolding     = holdings.find(h => h.ticker_symbol === selStock?.ticker_symbol);
+  const myHolding     = liveHeld.find(h => h.ticker_symbol === selStockLive?.ticker_symbol);
   const myShares      = parseFloat(myHolding?.quantity || 0);
 
-  const changePct     = parseFloat(selStock?.price_change_percent || 0);
+  const changePct     = parseFloat(selStockLive?.price_change_percent || 0);
   const isUp          = changePct >= 0;
 
   /* ════════════════════════════════════════════════════════
@@ -229,6 +252,14 @@ export function UserTrade() {
   ════════════════════════════════════════════════════════ */
   const placeOrder = async () => {
     if (!selStock?.stock_id) { showToast("No stock selected.", false); return; }
+
+    /* Market hours. The backend rejects this too — checked here so the user sees
+       why immediately, and so a top-up flow can't stumble into a closed market. */
+    if (!tradingAllowed) {
+      showToast(marketStatus?.trading_blocked_reason || "Market is currently closed.", false);
+      setConfirmOpen(false);
+      return;
+    }
 
     const qtyError = validateQuantity(qty);
     if (qtyError) { showToast(qtyError, false); return; }
@@ -293,6 +324,14 @@ export function UserTrade() {
      5. Refresh wallet → placeOrder()
   ════════════════════════════════════════════════════════ */
   const handleTopUpThenBuy = async () => {
+    /* Checked before Razorpay opens, not after: charging the card and then
+       discovering the market is shut leaves the user paid-up with no trade. */
+    if (!tradingAllowed) {
+      showToast(marketStatus?.trading_blocked_reason || "Market is currently closed.", false);
+      setConfirmOpen(false);
+      return;
+    }
+
     const amtError = validateAmount(topUpAmt, { label: "Top-up amount", min: 1 });
     if (amtError) { showToast(amtError, false); return; }
     const topUpAmount = parseFloat(topUpAmt);
@@ -509,13 +548,7 @@ export function UserTrade() {
                       {selStock ? (
                         <>
                           <div className="flex items-center gap-2.5">
-                            {selStock.logo_url ? (
-                              <img src={selStock.logo_url} alt="" className="w-7 h-7 rounded-lg object-contain bg-white/5" onError={e => { e.target.style.display = "none"; }} />
-                            ) : (
-                              <div className="w-7 h-7 rounded-lg bg-cyan-500/15 flex items-center justify-center">
-                                <span className="text-xs font-bold text-cyan-400">{(selStock.ticker_symbol || "?").slice(0, 2)}</span>
-                              </div>
-                            )}
+                            <StockLogo symbol={selStock.ticker_symbol} name={selStock.company_name} size="sm" />
                             <div className="text-left">
                               <div className="text-sm font-bold text-white">{selStock.ticker_symbol}</div>
                               <div className="text-xs text-gray-600 truncate max-w-[120px]">{selStock.company_name}</div>
@@ -523,7 +556,7 @@ export function UserTrade() {
                           </div>
                           <div className="text-right">
                             <div className="text-sm font-semibold text-white">
-                              {fmtPx(selStock.current_price, stockCurrency)}
+                              {fmtPx(currentPrice, stockCurrency)}
                             </div>
                             <div className={`text-xs ${isUp ? "text-emerald-400" : "text-red-400"} flex items-center gap-0.5 justify-end`}>
                               {isUp ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
@@ -566,13 +599,7 @@ export function UserTrade() {
                                 onClick={() => { setSelStock(s); setDropOpen(false); setSearchQ(""); setLimitPx(""); }}
                                 className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-white/5 transition-colors text-left">
                                 <div className="flex items-center gap-2.5">
-                                  {s.logo_url ? (
-                                    <img src={s.logo_url} alt="" className="w-6 h-6 rounded-lg object-contain bg-white/5" onError={e => { e.target.style.display = "none"; }} />
-                                  ) : (
-                                    <div className="w-6 h-6 rounded-lg bg-cyan-500/10 flex items-center justify-center">
-                                      <span className="text-xs font-bold text-cyan-400">{(s.ticker_symbol || "?").slice(0, 2)}</span>
-                                    </div>
-                                  )}
+                                  <StockLogo symbol={s.ticker_symbol} name={s.company_name} size="xs" />
                                   <div>
                                     <div className="text-sm font-medium text-white">{s.ticker_symbol}</div>
                                     <div className="text-xs text-gray-600 truncate max-w-[140px]">{s.company_name}</div>
@@ -718,16 +745,22 @@ export function UserTrade() {
                   </div>
                 )}
 
+                {/* Market shut → the form explains itself instead of failing on submit */}
+                <MarketClosedNotice status={marketStatus} />
+
                 {/* Place order button */}
                 <button
                   onClick={() => { setTopUpMode(tradeType === "BUY" && !hasSufficientFunds); setConfirmOpen(true); }}
-                  disabled={!selStock || qtyNum < 1}
+                  disabled={!selStock || qtyNum < 1 || !tradingAllowed}
+                  title={!tradingAllowed ? marketStatus?.trading_blocked_reason : undefined}
                   className={`w-full py-3.5 rounded-2xl text-sm font-semibold text-white transition-all hover:opacity-90 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
                     tradeType === "BUY"
                       ? "bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/15"
                       : "bg-gradient-to-r from-red-500 to-red-600 shadow-lg shadow-red-500/15"
                   }`}>
-                  {tradeType === "BUY" && !hasSufficientFunds
+                  {!tradingAllowed
+                    ? "Market Closed"
+                    : tradeType === "BUY" && !hasSufficientFunds
                     ? `Add Funds & Buy ${selStock?.ticker_symbol || ""}`
                     : `Place ${tradeType === "BUY" ? "Buy" : "Sell"} Order`}
                 </button>
@@ -902,9 +935,11 @@ export function UserTrade() {
                   className="py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-sm text-gray-400 hover:text-white cursor-pointer">
                   Cancel
                 </button>
+                {/* Re-checked here: the bell can ring while this modal sits
+                    open, and the top-up flow can take minutes. */}
                 <button
                   onClick={topUpMode ? handleTopUpThenBuy : placeOrder}
-                  disabled={placingOrder}
+                  disabled={placingOrder || !tradingAllowed}
                   className={`py-2.5 rounded-xl text-sm font-semibold text-white cursor-pointer disabled:opacity-60 flex items-center justify-center gap-1.5 ${
                     tradeType === "BUY"
                       ? "bg-emerald-500 hover:opacity-90"
@@ -912,6 +947,7 @@ export function UserTrade() {
                   }`}>
                   {placingOrder
                     ? <><Loader2 className="w-4 h-4 animate-spin" />{topUpMode ? "Processing…" : "Placing…"}</>
+                    : !tradingAllowed ? "Market Closed"
                     : topUpMode ? "Pay & Buy →" : "Confirm"}
                 </button>
               </div>

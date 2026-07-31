@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Outlet, useNavigate, useLocation, Link } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -20,6 +20,10 @@ import {
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { SupportChatWidget } from "../../components/SupportChatWidget";
+import { MarketSessionPill } from "../../components/MarketStatusBadge";
+import { useMarketStatus } from "../../hooks/useMarketStatus";
+import { LiveQuotesProvider, useLiveQuotes, liveStocks } from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken  = () => localStorage.getItem("access_token");
@@ -43,10 +47,25 @@ const nav = [
 ];
 
 /* ────────────────────────────────────────────────────────────────────────── */
+/**
+ * The provider wraps the layout itself, not just <Outlet/>, because the header
+ * ticker is one of the things that has to stay live. Everything below — header,
+ * ticker, and every routed page — then reads prices from one shared poll.
+ */
 export function UserLayout() {
+  return (
+    <LiveQuotesProvider>
+      <UserLayoutInner />
+    </LiveQuotesProvider>
+  );
+}
+
+function UserLayoutInner() {
   const navigate  = useNavigate();
   const location  = useLocation();
   const { user: authUser, logout } = useAuth();
+  const { status: marketStatus }   = useMarketStatus();
+  const { quotes }                 = useLiveQuotes();
 
   const [sidebar,       setSidebar]       = useState(false);
   const [notifs,        setNotifs]        = useState(false);
@@ -61,13 +80,8 @@ export function UserLayout() {
   const [userProfile,   setUserProfile]   = useState(null);
   const [holdings,      setHoldings]      = useState([]);
 
-  /* ── Ticker: live stock prices, populated from the API on mount (no dummy data) ── */
-  const [marketIndices, setMarketIndices] = useState([]);
-
   /* Stable refs so interval closures always call the latest version */
-  const fetchMarketRef = useRef(null);
   const fetchNotifRef  = useRef(null);
-  const marketIntervalRef = useRef(null);
   const notifIntervalRef  = useRef(null);
   const notifRef          = useRef(null);   // wraps the bell + dropdown for click-outside
 
@@ -81,43 +95,32 @@ export function UserLayout() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [notifs]);
 
-  /* ── Fetch market overview (ticker data) ─────────────────────────────────
-     Uses /dashboard/user/market_overview — lighter endpoint, no CORS issues.
-     Falls back to /dashboard/sector_performance if needed.
-     IMPORTANT: No `credentials:'include'` — JWT is in the Authorization header.
+  /* ── Ticker rows, derived from the shared quote store ────────────────────
+     No fetch and no interval of its own any more. The ticker used to poll
+     /stocks/list every 20s on its own schedule, which meant the price scrolling
+     across the top could be up to 20s out of step with the same stock's price
+     on the page below it. Now both read the same poll.
   ──────────────────────────────────────────────────────────────────────── */
-  const fetchMarketIndices = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
+  const marketIndices = useMemo(() => {
+    // The store indexes each quote under both `id:` and `sym:`; take the id
+    // entries only so each stock appears once.
+    const rows = Object.entries(quotes)
+      .filter(([k]) => k.startsWith("id:"))
+      .map(([, q]) => q)
+      .filter((q) => q.current_price != null)
+      .sort((a, b) => Number(b.current_price) - Number(a.current_price))
+      .slice(0, 14);
 
-    try {
-      /* Live prices straight from the stocks feed (updated by the market-data
-         provider). This shows real, moving prices instead of static indices. */
-      const res = await fetch(`${API_BASE}/stocks/list?per_page=25&sort_by=current_price&order=desc`, {
-        headers: authHdr(),
-      });
-      if (res.ok) {
-        const data   = await res.json();
-        const stocks = data?.response?.stocks || [];
-        const priced = stocks.filter((s) => s.current_price != null);
-        if (priced.length > 0) {
-          setMarketIndices(
-            priced.slice(0, 14).map((s) => {
-              const chg = Number(s.price_change_percent ?? 0);
-              return {
-                name:   s.ticker_symbol || "—",
-                value:  `₹${Number(s.current_price).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`,
-                change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
-                up:     chg >= 0,
-              };
-            })
-          );
-        }
-      }
-    } catch {
-      /* Keep last-known ticker values — no error log spam */
-    }
-  }, []); // ← stable — no deps that change
+    return rows.map((q) => {
+      const chg = Number(q.price_change_percent ?? 0);
+      return {
+        name:   q.ticker_symbol || "—",
+        value:  `₹${Number(q.current_price).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`,
+        change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
+        up:     chg >= 0,
+      };
+    });
+  }, [quotes]);
 
   /* ── Fetch user profile ──────────────────────────────────────────────── */
   const fetchUserProfile = useCallback(async () => {
@@ -178,7 +181,6 @@ export function UserLayout() {
   }, []);
 
   /* Keep refs current so interval closures always call the latest fn */
-  useEffect(() => { fetchMarketRef.current = fetchMarketIndices; }, [fetchMarketIndices]);
   useEffect(() => { fetchNotifRef.current  = fetchNotifications; }, [fetchNotifications]);
 
   /* ── Mark notification read ─────────────────────────────────────────── */
@@ -228,10 +230,10 @@ export function UserLayout() {
             h.ticker_symbol?.toLowerCase().includes(query.toLowerCase()) ||
             h.company_name?.toLowerCase().includes(query.toLowerCase())
           )
-          .map(h => ({ symbol: h.ticker_symbol, name: h.company_name, type: "Holding", logo_url: h.logo_url })),
+          .map(h => ({ symbol: h.ticker_symbol, name: h.company_name, type: "Holding" })),
         ...stocks
           .filter(s => !holdSymbols.has(s.ticker_symbol))
-          .map(s => ({ symbol: s.ticker_symbol, name: s.company_name, type: "Stock", logo_url: s.logo_url })),
+          .map(s => ({ symbol: s.ticker_symbol, name: s.company_name, type: "Stock" })),
       ].slice(0, 8);
       setSearchResults(results);
     } catch { setSearchResults([]); }
@@ -253,10 +255,12 @@ export function UserLayout() {
        Fixed by adding a dedicated 30-second poll for notifications.
      • Having `fetchX` functions in the dep array caused the effect to
        re-register whenever function identity changed — avoided by using
-       stable refs (fetchMarketRef / fetchNotifRef) inside the intervals.
+       stable refs (fetchNotifRef) inside the intervals.
      • `credentials:'include'` caused a CORS preflight (OPTIONS) before
        EVERY request — removed from all fetch calls above.
-     • Market ticker interval stays at 5 minutes (price data is slow-moving).
+     • The ticker's own 20s price poll is gone — prices now come from the
+       shared LiveQuotesProvider, so the ticker can't drift out of step with
+       the page beneath it.
      • Notifications interval is 30 seconds (needs to feel near-live).
   ──────────────────────────────────────────────────────────────────────── */
   useEffect(() => {
@@ -264,7 +268,6 @@ export function UserLayout() {
     if (!token) return;
 
     /* Initial fetch — call through refs so we don't need them as deps */
-    fetchMarketIndices();
     fetchUserProfile();
     fetchUserHoldings();
     fetchNotifications();
@@ -274,15 +277,6 @@ export function UserLayout() {
        the profile, keeping the sidebar/header avatar in sync without a reload. */
     const onProfileUpdated = () => fetchUserProfile();
     window.addEventListener("profile-updated", onProfileUpdated);
-
-    /* Refresh ticker every 20 seconds for a near-live feel */
-    marketIntervalRef.current = setInterval(() => {
-      if (getToken()) fetchMarketRef.current?.();
-      else {
-        clearInterval(marketIntervalRef.current);
-        marketIntervalRef.current = null;
-      }
-    }, 20_000); // 20 seconds — live price ticker
 
     /* Refresh notifications every 30 seconds — this is the actual fix:
        admin-sent notifications now reach the bell without a page reload */
@@ -296,9 +290,7 @@ export function UserLayout() {
 
     return () => {
       window.removeEventListener("profile-updated", onProfileUpdated);
-      clearInterval(marketIntervalRef.current);
       clearInterval(notifIntervalRef.current);
-      marketIntervalRef.current = null;
       notifIntervalRef.current  = null;
     };
   }, []); // ← intentionally empty — runs once on mount
@@ -523,13 +515,7 @@ export function UserLayout() {
                       className="px-4 py-3 hover:bg-white/5 cursor-pointer border-b border-white/5 last:border-0 flex items-center justify-between"
                     >
                       <div className="flex items-center gap-3">
-                        {res.logo_url ? (
-                          <img src={res.logo_url} alt={res.symbol} className="w-6 h-6 rounded-lg object-contain bg-white/5" onError={(e) => { e.target.style.display="none"; }} />
-                        ) : (
-                          <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-cyan-500/15 to-blue-600/15 border border-cyan-500/10 flex items-center justify-center">
-                            <span className="text-xs font-bold text-cyan-400">{res.symbol?.slice(0, 2)}</span>
-                          </div>
-                        )}
+                        <StockLogo symbol={res.symbol} name={res.name} size="xs" />
                         <div>
                           <div className="text-sm font-bold text-white">{res.symbol}</div>
                           <div className="text-xs text-gray-500 truncate max-w-[140px]">{res.name}</div>
@@ -549,11 +535,9 @@ export function UserLayout() {
           </div>
 
           <div className="ml-auto flex items-center gap-3">
-            {/* Markets open indicator */}
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/15 rounded-full">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-xs text-emerald-400">Markets Open</span>
-            </div>
+            {/* Live NSE session state — never hardcode this; it tells the user
+                whether they can trade at all. */}
+            <MarketSessionPill status={marketStatus} />
 
             {/* Notifications */}
             <div className="relative" ref={notifRef}>

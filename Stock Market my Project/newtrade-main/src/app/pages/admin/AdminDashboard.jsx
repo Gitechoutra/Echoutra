@@ -9,6 +9,7 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
   BarChart, Bar, Cell, PieChart, Pie,
 } from "recharts";
+import { StockLogo } from "../../components/StockLogo";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -478,17 +479,7 @@ export function AdminDashboard() {
                     <td className="px-5 py-3 text-xs text-gray-600">{i + 1}</td>
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2.5">
-                        {s.logo_url ? (
-                          <img src={s.logo_url} alt={s.ticker_symbol}
-                            className="w-7 h-7 rounded-lg object-contain bg-white/5"
-                            onError={e => { e.target.style.display = "none"; }} />
-                        ) : (
-                          <div className="w-7 h-7 rounded-lg bg-violet-500/10 flex items-center justify-center">
-                            <span className="text-xs font-bold text-violet-400">
-                              {(s.ticker_symbol || "").slice(0, 2)}
-                            </span>
-                          </div>
-                        )}
+                        <StockLogo symbol={s.ticker_symbol} name={s.company_name} size="sm" />
                         <div>
                           <div className="text-sm font-bold text-white">{s.ticker_symbol}</div>
                           <div className="text-xs text-gray-600 truncate max-w-[120px]">{s.company_name}</div>

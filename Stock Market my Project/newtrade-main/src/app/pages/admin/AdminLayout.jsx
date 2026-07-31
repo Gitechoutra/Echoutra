@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { Outlet, useNavigate, useLocation, Link } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -19,6 +19,9 @@ import {
   Landmark,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { MarketSessionPill } from "../../components/MarketStatusBadge";
+import { useMarketStatus } from "../../hooks/useMarketStatus";
+import { LiveQuotesProvider, useLiveQuotes } from "../../context/LiveQuotesContext";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken  = () => localStorage.getItem("access_token");
@@ -36,10 +39,21 @@ const nav = [
 ];
 
 /* ══════════════════════════════════════════════════════════════════════════ */
+/** Same shared price poll as the user portal — the two must never disagree. */
 export function AdminLayout() {
+  return (
+    <LiveQuotesProvider>
+      <AdminLayoutInner />
+    </LiveQuotesProvider>
+  );
+}
+
+function AdminLayoutInner() {
   const navigate  = useNavigate();
   const location  = useLocation();
   const { user, logout } = useAuth();
+  const { status: marketStatus } = useMarketStatus();
+  const { quotes } = useLiveQuotes();
 
   const [sidebar,       setSidebar]       = useState(false);
   const [notifs,        setNotifs]        = useState(false);
@@ -51,13 +65,11 @@ export function AdminLayout() {
   const [profileOpen,   setProfileOpen]   = useState(false);
   const [sidebarMenu,   setSidebarMenu]   = useState(false);
   const [searchResults, setSearchResults] = useState([]);
-  const [marketIndices, setMarketIndices] = useState([]);   // live stock prices, filled on mount
   const [userProfile,   setUserProfile]   = useState(null);
   const [popups,        setPopups]        = useState([]);   // transient toasts for arriving alerts
 
   const fetchNotifRef    = useRef(null);
   const notifIntervalRef = useRef(null);
-  const marketIntervalRef = useRef(null);
   const notifRef         = useRef(null);   // wraps the bell + dropdown for click-outside
 
   /* Notification ids already surfaced as a popup. The first fetch only primes
@@ -96,36 +108,28 @@ export function AdminLayout() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [notifs]);
 
-  const fetchMarketTicker = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
-    try {
-      /* Live prices straight from the stocks feed — real, moving prices. */
-      const res = await fetch(`${API_BASE}/stocks/list?per_page=25&sort_by=current_price&order=desc`, {
-        headers: authHdr(),
+  /* Ticker rows, derived from the shared quote store — identical derivation to
+     the user portal's header, so the two tickers can never show different
+     prices for the same stock. No fetch and no interval of its own. */
+  const marketIndices = useMemo(() => {
+    // The store indexes each quote under both `id:` and `sym:`; take the id
+    // entries only so each stock appears once.
+    return Object.entries(quotes)
+      .filter(([k]) => k.startsWith("id:"))
+      .map(([, q]) => q)
+      .filter((q) => q.current_price != null)
+      .sort((a, b) => Number(b.current_price) - Number(a.current_price))
+      .slice(0, 14)
+      .map((q) => {
+        const chg = Number(q.price_change_percent ?? 0);
+        return {
+          name:   q.ticker_symbol || "—",
+          value:  `₹${Number(q.current_price).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`,
+          change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
+          up:     chg >= 0,
+        };
       });
-      if (res.ok) {
-        const data   = await res.json();
-        const stocks = data?.response?.stocks || [];
-        const priced = stocks.filter((s) => s.current_price != null);
-        if (priced.length > 0) {
-          setMarketIndices(
-            priced.slice(0, 14).map((s) => {
-              const chg = Number(s.price_change_percent ?? 0);
-              return {
-                name:   s.ticker_symbol || "—",
-                value:  `₹${Number(s.current_price).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`,
-                change: `${chg >= 0 ? "+" : ""}${chg.toFixed(2)}%`,
-                up:     chg >= 0,
-              };
-            })
-          );
-        }
-      }
-    } catch {
-      /* Keep last-known ticker values */
-    }
-  }, []);
+  }, [quotes]);
 
   /*
      FIX — admin's own notification bell.
@@ -202,7 +206,6 @@ export function AdminLayout() {
 
   /* ── One-time init + notification poll (empty dep array — runs once) ──── */
   useEffect(() => {
-    fetchMarketTicker();
     fetchUserProfile();
     fetchNotifications();
 
@@ -216,20 +219,12 @@ export function AdminLayout() {
       }
     }, 30_000);
 
-    /* Refresh the live price ticker every 20 seconds */
-    marketIntervalRef.current = setInterval(() => {
-      if (getToken()) fetchMarketTicker();
-      else {
-        clearInterval(marketIntervalRef.current);
-        marketIntervalRef.current = null;
-      }
-    }, 20_000);
+    /* The ticker's own 20s price poll used to live here. Prices now come from
+       the shared LiveQuotesProvider — see marketIndices above. */
 
     return () => {
       clearInterval(notifIntervalRef.current);
       notifIntervalRef.current = null;
-      clearInterval(marketIntervalRef.current);
-      marketIntervalRef.current = null;
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -544,10 +539,9 @@ export function AdminLayout() {
           </div>
 
           <div className="ml-auto flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 bg-emerald-500/10 border border-emerald-500/15 rounded-full">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-xs text-emerald-400">Markets Open</span>
-            </div>
+            {/* Live NSE session state — shared with the user portal so the two
+                can never disagree about whether the market is open. */}
+            <MarketSessionPill status={marketStatus} />
 
             {/* Notifications */}
             <div className="relative" ref={notifRef}>

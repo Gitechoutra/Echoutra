@@ -46,6 +46,24 @@ class TradeMode:
     CHOICES = [DELIVERY, INTRADAY]
 
 
+class PositionEffect:
+    """What this order does to the position, decided when it is placed.
+
+    OPEN  — BUY that opens/adds to a long, or SELL that opens/adds to a short.
+    CLOSE — SELL that reduces a long, or BUY that covers a short.
+
+    The engine re-checks the live position at fill time (a lot can happen between
+    placing a queued order and it triggering), but the effect recorded here is
+    what decides whether margin is reserved at placement — and therefore what has
+    to be released if the order is cancelled or expires.
+    """
+
+    OPEN  = "OPEN"
+    CLOSE = "CLOSE"
+
+    CHOICES = [OPEN, CLOSE]
+
+
 class TradeOrders(db.Model):
     __tablename__ = 'trade_orders'
 
@@ -59,6 +77,7 @@ class TradeOrders(db.Model):
     order_status = db.Column(db.String(25), default=OrderStatus.PENDING)
     order_duration = db.Column(db.String(5), default=OrderDuration.DAY)
     trade_mode = db.Column(db.String(10), default=TradeMode.DELIVERY, index=True)  # DELIVERY, INTRADAY
+    position_effect = db.Column(db.String(10), nullable=True)      # OPEN, CLOSE (NULL on legacy rows)
 
     # Quantity
     quantity = db.Column(db.Numeric(15, 6), nullable=False)

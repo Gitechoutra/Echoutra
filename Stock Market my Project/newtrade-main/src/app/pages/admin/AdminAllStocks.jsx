@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -7,8 +7,10 @@ import {
   IndianRupee, Globe, BarChart2,
 } from "lucide-react";
 import { StockChart } from "../../components/StockChart";
-import { useMarketStatus, useLivePrices } from "../../hooks/useMarketStatus";
+import { StockLogo } from "../../components/StockLogo";
+import { useMarketStatus } from "../../hooks/useMarketStatus";
 import { MarketStatusBadge } from "../../components/MarketStatusBadge";
+import { useLiveQuotes, quoteFor } from "../../context/LiveQuotesContext";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -180,13 +182,29 @@ export function AdminAllStocks() {
     }
   }, []);
 
-  /* Live price polling, on the same cadence and the same market-status source
-     the User portal uses. Admin previously had NO auto-refresh at all -- prices
-     only moved when someone clicked "Refresh Live", so the two portals routinely
-     showed different prices for the same stock at the same moment. */
+  /* Prices come from the same shared quote poll the User portal uses, so the two
+     portals cannot show different prices for the same stock at the same moment.
+     This page keeps its own fetch for the admin-only columns (holders, platform
+     AUM, popularity) — those change on trades, not on ticks, so they don't need
+     to be re-fetched every ten seconds. */
   const { status: marketStatus } = useMarketStatus();
-  const refreshPrices = useCallback(() => fetchData(true), [fetchData]);
-  useLivePrices(refreshPrices, { status: marketStatus });
+  const { quotes } = useLiveQuotes();
+
+  /* This page's rows have their own field names (price/changePct/prevClose),
+     so the shared overlay is applied by hand rather than via liveStock(). */
+  const livePricedStocks = useMemo(() => stocks.map((s) => {
+    const q = quoteFor(quotes, s.stock_id ?? s.symbol);
+    if (!q || q.current_price == null) return s;
+    return {
+      ...s,
+      price:     Number(q.current_price),
+      prevClose: q.previous_close       ?? s.prevClose,
+      dayHigh:   q.day_high             ?? s.dayHigh,
+      dayLow:    q.day_low              ?? s.dayLow,
+      changePct: q.price_change_percent ?? s.changePct,
+      volume:    q.volume               ?? s.volume,
+    };
+  }), [stocks, quotes]);
 
   /* Merge admin overview row with stocks/list row */
   function mergeStock(ov, listS) {
@@ -321,7 +339,7 @@ export function AdminAllStocks() {
   const allExchanges = ["All", ...Array.from(new Set(stocks.map(s => s.exchange).filter(s => s !== "—"))).sort()];
   const allCurrencies= ["All", ...Array.from(new Set(stocks.map(s => s.currency).filter(Boolean))).sort()];
 
-  const filtered = stocks
+  const filtered = livePricedStocks
     .filter(s =>
       ((s.symbol || "").toLowerCase().includes(search.toLowerCase()) ||
        (s.name   || "").toLowerCase().includes(search.toLowerCase()) ||
@@ -463,15 +481,7 @@ export function AdminAllStocks() {
                       {/* Symbol / ISIN */}
                       <td className="px-4 py-3.5">
                         <div className="flex items-center gap-2.5">
-                          <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-violet-500/20 to-purple-600/20 border border-violet-500/15 flex items-center justify-center overflow-hidden flex-shrink-0">
-                            {s.logo_url ? (
-                              <img src={s.logo_url} alt={s.symbol}
-                                className="w-full h-full object-contain p-0.5"
-                                onError={e => { e.target.style.display = "none"; }} />
-                            ) : (
-                              <span className="text-xs font-bold text-violet-300">{(s.symbol || "??").slice(0, 2)}</span>
-                            )}
-                          </div>
+                          <StockLogo symbol={s.symbol} name={s.name} size="md" />
                           <div>
                             <div className="flex items-center gap-1.5">
                               <span className="text-sm font-bold text-white">{s.symbol}</span>
@@ -567,11 +577,7 @@ export function AdminAllStocks() {
               {/* Header */}
               <div className="flex items-center justify-between px-6 py-4 border-b border-white/5">
                 <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center overflow-hidden">
-                    {chartTarget.logo_url
-                      ? <img src={chartTarget.logo_url} alt={chartTarget.symbol} className="w-full h-full object-contain p-0.5" onError={e => { e.target.style.display = "none"; }} />
-                      : <span className="text-xs font-bold text-violet-300">{(chartTarget.symbol || "??").slice(0, 2)}</span>}
-                  </div>
+                  <StockLogo symbol={chartTarget.symbol} name={chartTarget.name} size="lg" />
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="text-base font-bold text-white">{chartTarget.symbol}</span>

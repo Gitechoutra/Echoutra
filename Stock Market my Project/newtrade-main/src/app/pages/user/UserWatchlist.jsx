@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import { Star, Plus, X, TrendingUp, TrendingDown, Bell, Search, AlertCircle } from "lucide-react";
 import { AreaChart, Area, ResponsiveContainer } from "recharts";
+import { useLiveQuotes, liveStocks } from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -10,6 +12,7 @@ const authHdr  = () => ({ Authorization: `Bearer ${getToken()}` });
 
 export function UserWatchlist() {
   const navigate = useNavigate();
+  const { quotes } = useLiveQuotes();
 
   const [watchlistId,    setWatchlistId]    = useState(null);
   const [watchlistItems, setWatchlistItems] = useState([]); // [{ item_id, stock_id, ticker_symbol, ... }]
@@ -49,7 +52,6 @@ export function UserWatchlist() {
                 stock_id:            item.stock_id,
                 ticker_symbol:       item.ticker_symbol,
                 company_name:        item.company_name,
-                logo_url:            item.logo_url,
                 sector:              item.sector,
                 current_price:       item.current_price,
                 price_change_percent:item.price_change_percent,
@@ -200,17 +202,29 @@ export function UserWatchlist() {
   };
 
   // ── Derived lists ──────────────────────────────────────────────────────────
-  // watchedStocks: items that have stock data
-  const watchedStocks = watchlistItems
-    .map((item) => ({
-      ...item,
-      ...(stocksData[item.ticker_symbol] || {}),
-    }))
-    .filter((s) => s.ticker_symbol);
+  // watchedStocks: items that have stock data, with the live price laid over the
+  // top. The watchlist previously fetched once at mount and then sat there — a
+  // page whose entire purpose is watching prices was the most static in the app.
+  // Ranked by today's move, biggest gainer first, so the number on each card
+  // means something and re-orders as the market does.
+  const watchedStocks = useMemo(
+    () => {
+      const rows = liveStocks(
+        watchlistItems
+          .map((item) => ({ ...item, ...(stocksData[item.ticker_symbol] || {}) }))
+          .filter((s) => s.ticker_symbol),
+        quotes,
+      );
+      return [...rows].sort(
+        (a, b) => Number(b.price_change_percent ?? 0) - Number(a.price_change_percent ?? 0)
+      );
+    },
+    [watchlistItems, stocksData, quotes],
+  );
 
   // Stocks available to add (not already in watchlist)
   const watchedTickers = new Set(watchlistItems.map((i) => i.ticker_symbol));
-  const availableForAdd = allStocks.filter(
+  const availableForAdd = liveStocks(allStocks, quotes).filter(
     (s) =>
       !watchedTickers.has(s.ticker_symbol) &&
       (s.ticker_symbol?.toLowerCase().includes(search.toLowerCase()) ||
@@ -344,9 +358,8 @@ export function UserWatchlist() {
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex-1 cursor-pointer" onClick={() => navigate(`/user/stock/${s.ticker_symbol}`)}>
                       <div className="flex items-center gap-2 mb-0.5">
-                        <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 flex items-center justify-center">
-                          <span className="text-xs font-bold text-cyan-400">{(s.ticker_symbol || "").slice(0, 2)}</span>
-                        </div>
+                        <span className="w-5 text-xs text-gray-600 tabular-nums">{i + 1}</span>
+                        <StockLogo symbol={s.ticker_symbol} name={s.company_name} size="sm" />
                         <span className="text-sm font-bold text-white">{s.ticker_symbol}</span>
                       </div>
                       <div className="text-xs text-gray-600 ml-9">{s.company_name}</div>

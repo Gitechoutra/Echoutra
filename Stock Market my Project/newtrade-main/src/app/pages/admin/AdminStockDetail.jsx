@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router";
 import {
   ArrowLeft, TrendingUp, TrendingDown, Lock, Edit2, ShieldAlert,
 } from "lucide-react";
 import { StockChart } from "../../components/StockChart";
 import { StockTabs } from "../../components/StockTabs";
+import { useLiveQuotes, liveStock } from "../../context/LiveQuotesContext";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -21,9 +22,14 @@ export function AdminStockDetail() {
   const { symbol } = useParams();
   const navigate   = useNavigate();
 
-  const [stock,   setStock]   = useState(null);
+  const [stockRaw, setStock]  = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState("");
+
+  // Price comes from the shared quote poll, so this page shows exactly what the
+  // user portal shows for the same stock at the same moment.
+  const { quotes } = useLiveQuotes();
+  const stock = useMemo(() => liveStock(stockRaw, quotes), [stockRaw, quotes]);
 
   const fetchStock = useCallback(async () => {
     setLoading(true); setError("");

@@ -43,7 +43,7 @@ def get_status(client, app, role='USER'):
 
 
 OPEN_NOW = datetime(2026, 7, 17, 11, 0, tzinfo=mc.IST)     # Friday, mid-session
-CLOSED_NOW = datetime(2026, 7, 17, 18, 0, tzinfo=mc.IST)   # Friday evening
+CLOSED_NOW = datetime(2026, 7, 17, 21, 0, tzinfo=mc.IST)   # Friday, after the close
 HOLIDAY_NOW = datetime(2026, 1, 26, 11, 0, tzinfo=mc.IST)  # Republic Day
 
 

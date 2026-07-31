@@ -1038,7 +1038,7 @@
 
 
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
@@ -1050,6 +1050,8 @@ import {
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
 import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
+import { useLiveQuotes, liveHoldings, livePortfolio } from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 
 const API_BASE  = "http://127.0.0.1:5050/v1";
 const getToken  = () => localStorage.getItem("access_token");
@@ -1066,8 +1068,28 @@ const SECTOR_COLORS = [
 // Reusable holdings/positions table card. Used for both DELIVERY holdings and
 // INTRADAY positions (showStatus=true adds an OPEN/CLOSED column).
 function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus = false, emptyText }) {
-  const cols = ["Symbol", "Shares", "Avg Cost", "Current", "Market Value", "P&L", "Return", "Weight"];
+  const cols = ["#", "Symbol", "Shares", "Avg Cost", "Current", "Market Value", "P&L", "Return", "Weight"];
   if (showStatus) cols.push("Status");
+
+  // Ranked by live market value, largest first. Because `list` is already
+  // price-overlaid, this re-sorts as the market moves — and the S.No column is
+  // simply the index of that ranking, so it follows automatically instead of
+  // being a fixed number stamped on a row.
+  const ranked = useMemo(() => {
+    const valueOf = (h) => {
+      const qty = parseFloat(h.quantity || 0);
+      const px  = parseFloat(h.current_price || 0) || parseFloat(h.average_buy_price || 0);
+      return parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : qty * px;
+    };
+    // Open positions rank above closed ones; a closed row has no live value to
+    // rank on and shouldn't push a live position down the list.
+    return [...list].sort((a, b) => {
+      const aClosed = a.is_active === false || a.position_status === "CLOSED";
+      const bClosed = b.is_active === false || b.position_status === "CLOSED";
+      if (aClosed !== bClosed) return aClosed ? 1 : -1;
+      return valueOf(b) - valueOf(a);
+    });
+  }, [list]);
   return (
     <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
       <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
@@ -1093,16 +1115,19 @@ function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus 
               </tr>
             </thead>
             <tbody>
-              {list.map((h, idx) => {
+              {ranked.map((h, idx) => {
+                const short    = h.position_side === "SHORT" || h.is_short === true;
                 const qty      = parseFloat(h.quantity          || 0);
                 const avgCost  = parseFloat(h.average_buy_price || 0);
                 const currPx   = parseFloat(h.current_price || 0) > 0 ? parseFloat(h.current_price) : avgCost;
                 const mktVal   = parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : qty * currPx;
                 const invested = parseFloat(h.total_invested || qty * avgCost);
-                const pnl      = parseFloat(h.unrealized_pnl || 0) !== 0 ? parseFloat(h.unrealized_pnl) : mktVal - invested;
+                // A short's P&L runs the other way — it gains as the price falls.
+                const fallbackPnl = short ? (avgCost - currPx) * qty : mktVal - invested;
+                const pnl      = parseFloat(h.unrealized_pnl || 0) !== 0 ? parseFloat(h.unrealized_pnl) : fallbackPnl;
                 const pnlPct   = parseFloat(h.unrealized_pnl_percent || 0) !== 0
                   ? parseFloat(h.unrealized_pnl_percent)
-                  : (avgCost > 0 ? ((currPx - avgCost) / avgCost) * 100 : 0);
+                  : (avgCost > 0 ? ((short ? avgCost - currPx : currPx - avgCost) / avgCost) * 100 : 0);
                 const up       = pnl >= 0;
                 const weight   = totalValue > 0 ? (mktVal / totalValue) * 100 : 0;
                 const ticker   = h.ticker_symbol || "—";
@@ -1114,17 +1139,22 @@ function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus 
                     onClick={() => ticker !== "—" && navigate(`/user/stock/${ticker}`)}
                     className={`border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors ${closed ? "opacity-60" : ""}`}
                   >
+                    <td className="px-5 py-3.5 text-sm text-gray-500 tabular-nums">{idx + 1}</td>
                     <td className="px-5 py-3.5">
                       <div className="flex items-center gap-2.5">
-                        {h.logo_url ? (
-                          <img src={h.logo_url} alt={ticker} className="w-7 h-7 rounded-xl object-contain bg-white/5" />
-                        ) : (
-                          <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 flex items-center justify-center">
-                            <span className="text-xs font-bold text-cyan-400">{ticker.slice(0, 2)}</span>
-                          </div>
-                        )}
+                        <StockLogo symbol={ticker} name={h.company_name} size="sm" />
                         <div>
-                          <div className="text-sm font-bold text-white">{ticker}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-sm font-bold text-white">{ticker}</span>
+                            {short && (
+                              <span
+                                title="Sold first — you owe these shares until you buy them back"
+                                className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/25 text-[9px] font-bold text-amber-400"
+                              >
+                                SHORT
+                              </span>
+                            )}
+                          </div>
                           <div className="text-xs text-gray-600">{h.sector || "—"}</div>
                         </div>
                       </div>
@@ -1172,9 +1202,13 @@ function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus 
 
 export function UserPortfolio() {
   const navigate = useNavigate();
+  const { quotes } = useLiveQuotes();
 
-  const [portfolio,   setPortfolio]   = useState(null);
-  const [holdings,    setHoldings]    = useState([]);
+  // *Raw = what the fetch returned; the live-overlaid `holdings` / `portfolio`
+  // are derived below so every value on this page moves with the market instead
+  // of waiting for the server's 5-minute revaluation.
+  const [portfolioRaw, setPortfolio]  = useState(null);
+  const [holdingsRaw, setHoldings]    = useState([]);
   const [perfData,    setPerfData]    = useState([]);
   const [monthlyData, setMonthlyData] = useState([]);
   const [sectorData,  setSectorData]  = useState([]);
@@ -1355,6 +1389,14 @@ export function UserPortfolio() {
   }, [createDefaultPortfolio, fetchPerformance]);
 
   useEffect(() => { loadData(); }, []);
+
+  // ── Live overlay ──────────────────────────────────────────────────────────
+  // Each holding takes the current price from the shared quote poll, and the
+  // summary tiles are rolled up from those holdings using the same arithmetic
+  // the server uses (see livePortfolio → revalue_portfolio). Value, P&L and
+  // today's change therefore track the market continuously.
+  const holdings  = useMemo(() => liveHoldings(holdingsRaw, quotes), [holdingsRaw, quotes]);
+  const portfolio = useMemo(() => livePortfolio(portfolioRaw, holdings), [portfolioRaw, holdings]);
 
   // ── Derived values ────────────────────────────────────────────────────────
   // Backend _portfolio_dict:

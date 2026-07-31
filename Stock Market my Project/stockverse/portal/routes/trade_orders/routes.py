@@ -7,7 +7,10 @@ from flask import jsonify
 from flask_restx import Namespace, Resource, reqparse
 from flask_jwt_extended import jwt_required, get_jwt, get_jwt_identity
 
-from portal.models.trade_orders       import TradeOrders, OrderType, OrderSide, OrderStatus, OrderDuration, TradeMode
+from portal.models.trade_orders       import (
+    TradeOrders, OrderType, OrderSide, OrderStatus, OrderDuration, TradeMode,
+    PositionEffect,
+)
 from portal.models.trade_executions   import TradeExecutions
 from portal.models.portfolio_holdings import PortfolioHoldings
 from portal.models.portfolios         import Portfolios
@@ -16,7 +19,11 @@ from portal.models.wallet_transactions import WalletTransactions, WalletTransact
 from portal.models.transactions       import Transactions, TxnType, TxnStatus
 from portal.models.stocks             import Stocks
 from portal.models.audit_logs         import AuditLogs
-from portal.helpers.order_engine      import execute_order as engine_execute_order
+from portal.helpers.order_engine      import (
+    execute_order as engine_execute_order,
+    plan_position_effect, is_short, short_margin, _release_hold_on_close,
+)
+from portal.helpers                   import market_calendar
 from portal.helpers.validators        import (
     Validator, validate_quantity, validate_price, validate_choice,
     validate_pagination, validate_notes,
@@ -102,8 +109,10 @@ def _execute_market_order(order: TradeOrders, stock: Stocks, wallet: Wallets, po
 class PlaceOrder(Resource):
     @ns.doc(
         description='Place a BUY or SELL order. MARKET orders execute immediately; '
-                    'LIMIT/STOP orders are queued.',
-        responses={200: 'Order placed', 400: 'Validation error', 403: 'Insufficient funds', 500: 'Server error'}
+                    'LIMIT/STOP orders are queued. Accepted only while the NSE is '
+                    'in continuous trading — see market_calendar.SESSION_WINDOW — '
+                    'excluding trading holidays.',
+        responses={200: 'Order placed', 400: 'Validation error', 403: 'Insufficient funds / market closed', 500: 'Server error'}
     )
     @jwt_required()
     @ns.expect(place_parser, validate=True)
@@ -143,6 +152,26 @@ class PlaceOrder(Resource):
             if trade_mode == TradeMode.DELIVERY and order_type != OrderType.MARKET:
                 return jsonify(bool=False, status=400, response={
                     'message': 'Delivery supports Market orders only. Use Intraday for Limit / Stop orders.'})
+
+            # ── Trading window ────────────────────────────────────────────────
+            # Nothing below this line may run outside continuous trading: a
+            # MARKET order fills instantly against stock.current_price, which
+            # after the close is a last traded price from a session that has ended,
+            # and a queued order would open an intraday position with no session
+            # left to close it in. Checked before the portfolio auto-create below
+            # so a rejected attempt leaves no rows behind.
+            blocked = market_calendar.trading_blocked_reason(trade_mode)
+            if blocked:
+                status = market_calendar.describe()
+                logger.info(f'[trade_orders] user {user_id} order rejected — market '
+                            f'{status["state"]} ({trade_mode} {order_side} {order_type})')
+                return jsonify(bool=False, status=403, response={
+                    'message':       blocked,
+                    'market_state':  status['state'],
+                    'session_label': status['session_label'],
+                    'holiday_name':  status['holiday_name'],
+                    'next_open':     status['next_open'],
+                })
 
             quantity = Decimal(str(args['quantity']))
 
@@ -201,28 +230,65 @@ class PlaceOrder(Resource):
             estimated_cost  = estimated_total + commission
             is_queued       = order_type != OrderType.MARKET
 
-            # BUY: check wallet balance
+            # ── What does this order do to the position? ───────────────────────
+            # Decided from what is open right now, in this trade_mode (delivery
+            # holdings and intraday positions are independent). The answer drives
+            # both the validation below and whether funds are reserved.
+            position_effect, holding = plan_position_effect(
+                order_side, portfolio_id, stock_id, trade_mode)
+            shorting = is_short(holding)
+
             if order_side == OrderSide.BUY:
-                if Decimal(str(wallet.available_balance)) < estimated_cost:
+                if shorting:
+                    # Buying against an open short covers it. Flipping straight
+                    # through to a long in one order is not supported — cover
+                    # first, then buy, so each leg's P&L is unambiguous.
+                    if Decimal(str(holding.quantity)) < quantity:
+                        return jsonify(bool=False, status=400, response={
+                            'message': (f'You are short {float(holding.quantity):g} '
+                                        f'{stock.ticker_symbol}. Buy that many or fewer to cover, '
+                                        f'then place a separate order to go long.'),
+                            'short_quantity': float(holding.quantity),
+                            'requested':      float(quantity),
+                        })
+                elif Decimal(str(wallet.available_balance)) < estimated_cost:
                     return jsonify(bool=False, status=403, response={
-                        'message':         'Insufficient funds.',
-                        'required':        float(estimated_cost),
-                        'available':       float(wallet.available_balance),
+                        'message':   'Insufficient funds.',
+                        'required':  float(estimated_cost),
+                        'available': float(wallet.available_balance),
                     })
 
-            # SELL: check holding within the SAME trade_mode (delivery holdings and
-            # intraday positions are independent).
             if order_side == OrderSide.SELL:
-                holding = PortfolioHoldings.query.filter_by(
-                    portfolio_id=portfolio_id, stock_id=stock_id,
-                    trade_mode=trade_mode, is_active=True
-                ).first()
-                if not holding or Decimal(str(holding.quantity)) < quantity:
-                    return jsonify(bool=False, status=400, response={
-                        'message':   f'Insufficient {trade_mode.lower()} shares to sell.',
-                        'available': float(holding.quantity) if holding else 0,
-                        'requested': float(quantity),
-                    })
+                if position_effect == PositionEffect.CLOSE:
+                    # Reducing a long — the shares have to be there.
+                    if Decimal(str(holding.quantity)) < quantity:
+                        return jsonify(bool=False, status=400, response={
+                            'message':   f'Insufficient {trade_mode.lower()} shares to sell.',
+                            'available': float(holding.quantity),
+                            'requested': float(quantity),
+                        })
+                else:
+                    # No long open → this opens (or adds to) a SHORT position.
+                    if trade_mode != TradeMode.INTRADAY:
+                        return jsonify(bool=False, status=400, response={
+                            'message': ('You do not own this stock. Short selling '
+                                        '(sell first, buy back later) is available on '
+                                        'Intraday only — switch Product to Intraday.'),
+                            'available': 0,
+                            'requested': float(quantity),
+                        })
+                    # Collateral: the full notional plus the fee, held until the
+                    # position is covered. See short_margin() for why 100%.
+                    margin_required = short_margin(quantity, reserve_price) + commission
+                    if Decimal(str(wallet.available_balance)) < margin_required:
+                        return jsonify(bool=False, status=403, response={
+                            'message': (f'Insufficient funds for short margin. Selling short '
+                                        f'requires the full value of the position as collateral '
+                                        f'until you buy it back.'),
+                            'required':  float(margin_required),
+                            'available': float(wallet.available_balance),
+                            'short_sell': True,
+                        })
 
             # Create order record
             order                   = TradeOrders()
@@ -232,6 +298,7 @@ class PlaceOrder(Resource):
             order.order_type        = order_type
             order.order_side        = order_side
             order.trade_mode        = trade_mode
+            order.position_effect   = position_effect
             order.order_status      = OrderStatus.PENDING
             order.order_duration    = args.get('order_duration', OrderDuration.DAY).upper()
             order.quantity          = quantity
@@ -249,10 +316,11 @@ class PlaceOrder(Resource):
             if order_type == OrderType.MARKET:
                 portfolio_obj = Portfolios.query.get(portfolio_id)
                 exec_rec = _execute_market_order(order, stock, wallet, portfolio_obj)
-            elif order_side == OrderSide.BUY:
-                # Reserve buying power for a pending BUY LIMIT/STOP so the funds
-                # can't be spent elsewhere. Released on cancel/expiry, or settled
-                # from locked_balance when the engine fills the order.
+            elif position_effect == PositionEffect.OPEN:
+                # Reserve for any queued order that OPENS a position: buying power
+                # for a BUY, short margin for a SELL. Either way the money can't be
+                # spent elsewhere while the order sits waiting. Released on
+                # cancel/expiry, or settled from locked_balance when it fills.
                 wallet.locked_balance    = Decimal(str(wallet.locked_balance)) + estimated_cost
                 wallet.available_balance = Decimal(str(wallet.balance)) - Decimal(str(wallet.locked_balance))
                 wallet.update()
@@ -307,16 +375,11 @@ class CancelOrder(Resource):
             order.rejection_reason = args.get('reason', 'Cancelled by user')
             order.update()
 
-            # Release the reserved buying power for a pending BUY LIMIT/STOP order.
-            # The lock included commission (estimated_amount * 1.001), so release
-            # the same amount to keep available_balance = balance - locked.
-            if order.order_side == OrderSide.BUY and order.order_type != OrderType.MARKET:
-                wallet = Wallets.query.filter_by(user_id=user_id).first()
-                if wallet and order.estimated_amount:
-                    reserved = Decimal(str(order.estimated_amount)) * Decimal('1.001')
-                    wallet.locked_balance    = max(Decimal('0'), Decimal(str(wallet.locked_balance)) - reserved)
-                    wallet.available_balance = Decimal(str(wallet.balance)) - Decimal(str(wallet.locked_balance))
-                    wallet.update()
+            # Release whatever this order had reserved — buying power for a queued
+            # BUY, or short margin for a queued SELL that would have opened a
+            # short. The engine owns that rule so cancel and expiry can't drift
+            # apart; missing the short case would strand the user's collateral.
+            _release_hold_on_close(order)
 
             return jsonify(bool=True, status=200, response={
                 'message':  'Order cancelled.',

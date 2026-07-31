@@ -2,6 +2,21 @@ from datetime import datetime
 from portal import db
 
 
+class PositionSide:
+    """Which way a position is facing.
+
+    LONG  — bought first, sold later. `average_buy_price` is the average price paid.
+    SHORT — sold first, bought back later (intraday only). `average_buy_price` is
+            the average price the shares were SOLD at, and P&L runs the other way:
+            the position gains when the price falls.
+    """
+
+    LONG  = "LONG"
+    SHORT = "SHORT"
+
+    CHOICES = [LONG, SHORT]
+
+
 class PortfolioHoldings(db.Model):
     __tablename__ = 'portfolio_holdings'
 
@@ -14,10 +29,20 @@ class PortfolioHoldings(db.Model):
     # separate positions (OPEN while is_active, CLOSED when fully sold).
     trade_mode = db.Column(db.String(10), default='DELIVERY', index=True)  # DELIVERY, INTRADAY
 
+    # LONG (bought first) or SHORT (sold first, bought back to close). SHORT is
+    # INTRADAY-only. Quantity stays POSITIVE either way — the side is what tells
+    # you which direction the position profits in, not the sign of the quantity.
+    # Storing shorts as negative quantities would silently corrupt every existing
+    # sum over `quantity` and `current_value` in the app.
+    position_side = db.Column(db.String(6), default=PositionSide.LONG, index=True)
+
     # Position details
     quantity = db.Column(db.Numeric(15, 6), nullable=False)            # Supports fractional shares
-    average_buy_price = db.Column(db.Numeric(15, 4), nullable=False)   # Weighted average cost basis
-    total_invested = db.Column(db.Numeric(15, 2), nullable=False)      # quantity * avg buy price
+    # Average ENTRY price: the price paid for a LONG, the price sold at for a SHORT.
+    average_buy_price = db.Column(db.Numeric(15, 4), nullable=False)
+    # LONG: capital actually invested. SHORT: notional value sold (the collateral
+    # itself is held in the wallet's locked_balance, not here).
+    total_invested = db.Column(db.Numeric(15, 2), nullable=False)
 
     # Current value (updated on price refresh)
     current_price = db.Column(db.Numeric(15, 4), nullable=True)

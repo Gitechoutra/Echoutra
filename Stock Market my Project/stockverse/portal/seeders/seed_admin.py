@@ -1,18 +1,4 @@
 
-"""
-portal/seeders/seed_admin.py
-─────────────────────────────
-Creates or updates the default ADMIN user.
-
-Called from create_app() AFTER seed_roles():
-
-    from portal.seeders.seed_admin import seed_admin
-    seed_admin()
-
-Default Credentials:
-    Email:    ramanarajmuddada20@gmail.com
-    Password: Ramana@123
-"""
 
 import logging
 
@@ -47,8 +33,8 @@ def seed_admin():
         return
 
     # Default Admin Credentials
-    admin_email = "goddumahesh2@gmail.com"
-    admin_password = "Sahii@2605"
+    admin_email = "ramanarajmuddada20@gmail.com"
+    admin_password = "Ramana@123"
     admin_username = "tradeflow_admin"
 
     existing_admin = Users.query.filter_by(

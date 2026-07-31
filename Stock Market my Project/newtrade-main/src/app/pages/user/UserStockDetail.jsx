@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -7,6 +7,10 @@ import {
 } from "lucide-react";
 import { StockChart } from "../../components/StockChart";
 import { StockTabs } from "../../components/StockTabs";
+import { MarketClosedNotice } from "../../components/MarketStatusBadge";
+import { useMarketStatus } from "../../hooks/useMarketStatus";
+import { useLiveQuotes, liveStock, liveHolding } from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -34,11 +38,23 @@ export function UserStockDetail() {
   const { symbol } = useParams();
   const navigate   = useNavigate();
 
-  // page data
-  const [stock,            setStock]           = useState(null);
+  // Market session — the server owns it; the client never decides from its own
+  // clock. Drives whether the trade panel accepts input at all.
+  const { status: marketStatus } = useMarketStatus();
+  const { quotes } = useLiveQuotes();
+  // Until the first status lands, `undefined` means "don't know" — the button
+  // stays enabled and the server has the final say, so a slow status call can
+  // never lock a user out of a market that is genuinely open.
+  const tradingAllowed = marketStatus ? (marketStatus.trading_allowed ?? marketStatus.is_open) : true;
+
+  // page data. The *Raw values are what the one-shot fetches returned; the
+  // derived `stock` / `myHolding` below carry the live price over the top, so
+  // every reference further down this file updates on each quote tick without
+  // needing its own fetch.
+  const [stockRaw,         setStock]           = useState(null);
   const [loading,          setLoading]         = useState(true);
   const [error,            setError]           = useState("");
-  const [myHolding,        setMyHolding]       = useState(null);
+  const [myHoldingRaw,     setMyHolding]       = useState(null);
   const [relatedNews,      setRelatedNews]     = useState([]);
 
   // watchlist
@@ -51,7 +67,7 @@ export function UserStockDetail() {
   const [exchange,     setExchange]     = useState("NSE");        // NSE | BSE
   const [tradeMode,    setTradeMode]    = useState("delivery");   // delivery | intraday
   const [orderType,    setOT]           = useState("market");
-  const [qty,          setQty]          = useState("0");
+  const [qty,          setQty]          = useState("");
   const [limitPx,      setLimitPx]      = useState("");
   const [confirm,      setConfirm]      = useState(false);
   const [placeErr,     setPlaceErr]     = useState("");
@@ -174,6 +190,18 @@ export function UserStockDetail() {
   const placeOrder = async () => {
     setPlaceErr("");
     if (!stock?.stock_id) { setPlaceErr("Stock data not loaded."); return; }
+
+    // Market hours. The backend rejects these too — this is here so the user
+    // gets the reason without a round trip, not as the enforcement point.
+    if (!tradingAllowed) {
+      setPlaceErr(
+        (tradeMode === "intraday"
+          ? marketStatus?.intraday_blocked_reason
+          : marketStatus?.trading_blocked_reason) || "Market is currently closed."
+      );
+      return;
+    }
+
     const quantity = parseFloat(qty);
     if (isNaN(quantity) || quantity <= 0) { setPlaceErr("Enter a valid quantity."); return; }
     if (orderType !== "market" && (!limitPx || isNaN(parseFloat(limitPx)))) {
@@ -189,11 +217,25 @@ export function UserStockDetail() {
     // Funds are added separately via Settings → Wallet → Add Money (Razorpay).
     // Frontend owned-check only for Delivery (myHolding tracks the delivery
     // holding). Intraday positions are validated by the backend per trade_mode.
+    // Delivery can only sell what you own. Intraday can sell short, so it is
+    // deliberately NOT blocked here — the backend validates the margin.
     if (tradeType === "sell" && tradeMode === "delivery") {
-      const owned = parseFloat(myHolding?.quantity || 0);
+      const owned = ownedQty;
       if (owned < quantity) {
-        setPlaceErr(`Insufficient shares. You own ${owned} share(s) of ${symbol}.`); return;
+        setPlaceErr(
+          `Insufficient shares. You own ${owned} share(s) of ${symbol}. ` +
+          `Switch Product to Intraday to sell short (sell first, buy back later).`
+        );
+        return;
       }
+    }
+    // Covering can't overshoot the short — the backend rejects it, but say so here.
+    if (isCoveringBuy && quantity > shortQty) {
+      setPlaceErr(
+        `You are short ${shortQty} share(s). Buy that many or fewer to cover, ` +
+        `then place a separate order to go long.`
+      );
+      return;
     }
 
     setPlacingOrder(true);
@@ -262,7 +304,26 @@ export function UserStockDetail() {
   }, [symbol]); // eslint-disable-line
 
   // ── Derived ───────────────────────────────────────────────────────────────
+
+  // Live overlay. The page still fetches the stock once for its static detail
+  // (name, sector, 52-week range, logo); the price, day change and the position's
+  // market value/P&L come from the shared quote poll, so the header price, the
+  // order panel and the chart all move together.
+  const stock     = useMemo(() => liveStock(stockRaw, quotes),      [stockRaw, quotes]);
+  const myHolding = useMemo(() => liveHolding(myHoldingRaw, quotes), [myHoldingRaw, quotes]);
+
   const up     = (stock?.price_change_percent || 0) >= 0;
+
+  // Short-selling state. `myHolding` is whichever position is open on this stock
+  // — long or short — so the panel below has to read the side, not assume long.
+  const isShortPos = myHolding?.position_side === "SHORT" || myHolding?.is_short === true;
+  const ownedQty   = isShortPos ? 0 : parseFloat(myHolding?.quantity || 0);
+  const shortQty   = isShortPos ? parseFloat(myHolding?.quantity || 0) : 0;
+
+  // A sell with nothing owned opens a short (intraday only); a buy against an
+  // open short covers it. Both need to be spelt out before the user commits.
+  const isShortSell   = tradeType === "sell" && tradeMode === "intraday" && ownedQty <= 0;
+  const isCoveringBuy = tradeType === "buy"  && shortQty > 0;
 
   // NSE / BSE prices. We store one live price for the stock's primary exchange;
   // the other exchange is shown with a small realistic spread. The selected
@@ -277,7 +338,7 @@ export function UserStockDetail() {
   const marketPx  = exPrices[exchange] || basePx;
 
   const execPx = orderType==="market" ? marketPx : (parseFloat(limitPx)||marketPx);
-  const total  = (parseFloat(qty)||0)*execPx;
+  const total  = (parseFloat(qty)||'')*execPx;
 
   // ── Early returns ─────────────────────────────────────────────────────────
   if (loading) return (
@@ -327,9 +388,7 @@ export function UserStockDetail() {
             <div className="flex items-start justify-between mb-4">
               <div>
                 <div className="flex items-center gap-3 mb-2">
-                  <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-cyan-500/15 flex items-center justify-center">
-                    <span className="text-sm font-bold text-cyan-400">{stock.ticker_symbol?.slice(0,2)}</span>
-                  </div>
+                  <StockLogo symbol={stock.ticker_symbol} name={stock.company_name} size="lg" />
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="text-lg font-bold text-white">{stock.ticker_symbol}</span>
@@ -362,12 +421,22 @@ export function UserStockDetail() {
 
             {myHolding&&(
               <div className="mb-4 p-3 bg-cyan-500/8 border border-cyan-500/15 rounded-xl">
-                <div className="text-xs text-cyan-400 mb-2 font-medium">My Position</div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className={`text-xs font-medium ${isShortPos?"text-amber-400":"text-cyan-400"}`}>
+                    My Position
+                  </span>
+                  {isShortPos && (
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/25 text-[10px] font-semibold text-amber-400">
+                      SHORT · sold first
+                    </span>
+                  )}
+                </div>
                 <div className="grid grid-cols-4 gap-3">
                   {[
                     ["Shares",   parseFloat(myHolding.quantity||0).toFixed(2)],
-                    ["Avg Cost", `₹${parseFloat(myHolding.average_buy_price||0).toFixed(2)}`],
-                    ["Mkt Value",`₹${parseFloat(myHolding.current_value||0).toLocaleString("en",{maximumFractionDigits:0})}`],
+                    // A short's entry is the price it was SOLD at, not a cost.
+                    [isShortPos?"Avg Sell":"Avg Cost", `₹${parseFloat(myHolding.average_buy_price||0).toFixed(2)}`],
+                    [isShortPos?"Buy-back":"Mkt Value",`₹${parseFloat(myHolding.current_value||0).toLocaleString("en",{maximumFractionDigits:0})}`],
                     ["P&L",      `${parseFloat(myHolding.unrealized_pnl||0)>=0?"+":""}₹${Math.abs(parseFloat(myHolding.unrealized_pnl||0)).toFixed(0)}`],
                   ].map(([l,v])=>(
                     <div key={l}>
@@ -376,6 +445,12 @@ export function UserStockDetail() {
                     </div>
                   ))}
                 </div>
+                {isShortPos && (
+                  <div className="mt-2 text-[11px] text-amber-300/80">
+                    Buy {parseFloat(myHolding.quantity||0).toFixed(2)} share(s) to square off.
+                    Any short still open at market close is bought back automatically.
+                  </div>
+                )}
               </div>
             )}
 
@@ -440,6 +515,12 @@ export function UserStockDetail() {
             </div>
 
             <div className="p-5 space-y-4">
+              {/* Market shut → say so before the user fills the form in */}
+              <MarketClosedNotice
+                status={marketStatus}
+                mode={tradeMode === "intraday" ? "INTRADAY" : "DELIVERY"}
+              />
+
               {/* Trading mode — Delivery vs Intraday (Upstox-style) */}
               <div>
                 <label className="text-xs text-gray-500 mb-2 block">Product</label>
@@ -504,7 +585,7 @@ export function UserStockDetail() {
               {/* Order summary */}
               <div className="bg-[#141C30] rounded-xl p-3 space-y-2">
                 <div className="flex justify-between text-xs"><span className="text-gray-500">Market Price ({exchange})</span><span className="text-white">₹{marketPx.toFixed(2)}</span></div>
-                <div className="flex justify-between text-xs"><span className="text-gray-500">Quantity</span><span className="text-white">{qty||0} shares</span></div>
+                <div className="flex justify-between text-xs"><span className="text-gray-500">Quantity</span><span className="text-white">{qty||''} shares</span></div>
                 <div className="flex justify-between text-xs"><span className="text-gray-500">Commission (~0.1%)</span><span className="text-gray-400">₹{(total*0.001).toFixed(2)}</span></div>
                 <div className="pt-2 border-t border-white/5 flex justify-between text-sm">
                   <span className="text-gray-400">Est. Total</span>
@@ -516,12 +597,37 @@ export function UserStockDetail() {
                 Buying Power: <span className="text-white">₹{buyingPower.toLocaleString("en",{minimumFractionDigits:2})}</span>
               </div>
 
-              {tradeType==="buy"&&orderType==="market"&&(
+              {/* Short sell — the least obvious thing this panel can do, so it
+                  says plainly what happens to the user's money. */}
+              {isShortSell&&(
+                <div className="px-3 py-2.5 bg-amber-500/8 border border-amber-500/20 rounded-xl text-xs text-amber-300 space-y-1">
+                  <div className="font-semibold text-amber-400">Short sell — you don't own this stock</div>
+                  <div>
+                    You sell now and buy back later. Profit if the price falls, loss if it rises.
+                  </div>
+                  <div>
+                    ₹{total.toLocaleString("en",{maximumFractionDigits:2})} is held from your wallet
+                    as collateral until you square off — it is not credited to you.
+                  </div>
+                  <div className="opacity-80">
+                    Auto squared-off at {marketStatus?.market_close_label || "market close"} IST if still open.
+                  </div>
+                </div>
+              )}
+              {isCoveringBuy&&(
+                <div className="px-3 py-2.5 bg-emerald-500/8 border border-emerald-500/20 rounded-xl text-xs text-emerald-300">
+                  <span className="font-semibold text-emerald-400">Buy to cover</span> — squares off
+                  your short of {shortQty.toFixed(2)} share(s). Your collateral is released and the
+                  profit or loss settles to your wallet.
+                </div>
+              )}
+
+              {tradeType==="buy"&&!isCoveringBuy&&orderType==="market"&&(
                 <div className="px-3 py-2 bg-cyan-500/8 border border-cyan-500/20 rounded-xl text-xs text-cyan-400 text-center">
                   Paid from wallet balance · deducted instantly
                 </div>
               )}
-              {tradeType==="buy"&&orderType!=="market"&&(
+              {tradeType==="buy"&&!isCoveringBuy&&orderType!=="market"&&(
                 <div className="px-3 py-2 bg-amber-500/8 border border-amber-500/20 rounded-xl text-xs text-amber-400 text-center">
                   Reserves wallet buying power · fills automatically when triggered
                 </div>
@@ -534,9 +640,14 @@ export function UserStockDetail() {
               )}
 
               <button onClick={()=>{setPlaceErr("");setConfirm(true);}}
-                disabled={!qty||parseFloat(qty)<=0}
+                disabled={!qty||parseFloat(qty)<=0||!tradingAllowed}
+                title={!tradingAllowed ? marketStatus?.trading_blocked_reason : undefined}
                 className={`w-full py-3 rounded-xl text-sm font-semibold text-white transition-all hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed ${tradeType==="buy"?"bg-gradient-to-r from-emerald-500 to-emerald-600 shadow-lg shadow-emerald-500/15":"bg-gradient-to-r from-red-500 to-red-600 shadow-lg shadow-red-500/15"}`}>
-                Review {tradeType==="buy"?"Buy":"Sell"} Order
+                {!tradingAllowed
+                  ? "Market Closed"
+                  : isShortSell   ? "Review Short Sell"
+                  : isCoveringBuy ? "Review Buy to Cover"
+                  : `Review ${tradeType==="buy"?"Buy":"Sell"} Order`}
               </button>
             </div>
           </div>
@@ -578,7 +689,8 @@ export function UserStockDetail() {
               <div className="text-center mb-5"><div className="text-lg font-bold text-white mb-1">Confirm Order</div></div>
               <div className="bg-[#141C30] rounded-xl p-4 space-y-2.5 mb-5">
                 {[
-                  ["Action",     tradeType==="buy"?"Buy":"Sell"],
+                  ["Action",     isShortSell ? "Short Sell" : isCoveringBuy ? "Buy to Cover"
+                                 : tradeType==="buy" ? "Buy" : "Sell"],
                   ["Symbol",     `${stock.ticker_symbol} · ${exchange}`],
                   ["Product",    tradeMode.toUpperCase()],
                   ["Order Type", orderType.toUpperCase()],
@@ -593,7 +705,13 @@ export function UserStockDetail() {
                 ))}
               </div>
 
-              {tradeType==="buy"&&orderType==="market"&&(
+              {isShortSell&&(
+                <div className="mb-4 p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 text-xs text-amber-300 text-center">
+                  ₹{total.toLocaleString("en",{maximumFractionDigits:2})} will be held as collateral
+                  until you buy these shares back. Nothing is credited to your balance now.
+                </div>
+              )}
+              {tradeType==="buy"&&!isCoveringBuy&&orderType==="market"&&(
                 <div className="mb-4 p-3 bg-cyan-500/10 rounded-xl border border-cyan-500/20 text-xs text-cyan-400 text-center">
                   ₹{total.toLocaleString("en",{maximumFractionDigits:2})} will be deducted from your wallet balance.
                 </div>
@@ -615,9 +733,11 @@ export function UserStockDetail() {
                   className="py-2.5 bg-[#141C30] border border-white/8 rounded-xl text-sm text-gray-400 hover:text-white transition-all">
                   Cancel
                 </button>
-                <button onClick={placeOrder} disabled={placingOrder}
+                {/* Re-checked here as well: the bell can ring while this modal
+                    is open, and a confirm at 15:31 must not go through. */}
+                <button onClick={placeOrder} disabled={placingOrder||!tradingAllowed}
                   className={`py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50 ${tradeType==="buy"?"bg-emerald-500 hover:bg-emerald-400":"bg-red-500 hover:bg-red-400"}`}>
-                  {placingOrder?"Processing…":"Confirm"}
+                  {placingOrder?"Processing…":!tradingAllowed?"Market Closed":"Confirm"}
                 </button>
               </div>
             </motion.div>

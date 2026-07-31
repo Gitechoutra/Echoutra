@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate } from "react-router";
 import { motion } from "motion/react";
 import {
   Search, TrendingUp, TrendingDown, Star,
   ChevronUp, ChevronDown, ArrowUpDown, RefreshCw, AlertCircle,
 } from "lucide-react";
-import { useMarketStatus, useLivePrices } from "../../hooks/useMarketStatus";
+import { useMarketStatus } from "../../hooks/useMarketStatus";
 import { MarketStatusBadge } from "../../components/MarketStatusBadge";
+import { useLiveQuotes, liveStocks, liveHoldings } from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 import { filterSearch, LIMITS } from "../../utils/validation";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
@@ -99,16 +101,15 @@ export function UserMarket() {
     return () => clearTimeout(t);
   }, [search, sector, sortBy, sortDir]); // eslint-disable-line
 
-  // Real-time price polling, paced by the server's market status: ~10s while
-  // trading, and stopped once the market closes since the last traded price
-  // cannot change until the next session. The old fixed 20s interval polled all
-  // night for prices that could never move.
+  // Prices come from the shared quote poll rather than re-fetching this page's
+  // whole (paginated, sorted, filtered) list every 10 seconds. That kept the
+  // rows live but re-ran the search query each tick, and it was a second clock
+  // that could disagree with the header ticker.
   const { status: marketStatus } = useMarketStatus();
-  const refreshPrices = useCallback(
-    () => fetchStocks(page, true),
-    [page, fetchStocks],
-  );
-  useLivePrices(refreshPrices, { status: marketStatus });
+  const { quotes } = useLiveQuotes();
+
+  const livePriced = useMemo(() => liveStocks(stocks, quotes), [stocks, quotes]);
+  const liveHeld   = useMemo(() => liveHoldings(myHoldings, quotes), [myHoldings, quotes]);
 
   const handleSort = (c) => {
     if (sortBy === c) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -116,13 +117,29 @@ export function UserMarket() {
   };
 
   // Filter client-side for tab (gainers/losers/watchlist)
-  const filtered = stocks.filter((s) => {
+  const filtered = livePriced.filter((s) => {
     const sym = s.ticker_symbol;
     if (tab === "gainers")   return movers.gainers.includes(sym) || (s.price_change_percent || 0) > 0;
     if (tab === "losers")    return movers.losers.includes(sym)  || (s.price_change_percent || 0) < 0;
     if (tab === "watchlist") return starred.includes(sym);
     return true;
   });
+
+  // Re-sort on the LIVE values, not the order the server returned. The API sorts
+  // once at fetch time; five seconds later a stock that has jumped is still
+  // sitting where it was, and the row numbers beside it would be wrong. Sorting
+  // here means the ranking — and therefore the S.No — follows every tick.
+  const sorted = useMemo(() => {
+    const key = sortBy || "current_price";
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const av = Number(a[key] ?? 0);
+      const bv = Number(b[key] ?? 0);
+      if (av === bv) return (a.ticker_symbol || "").localeCompare(b.ticker_symbol || "");
+      return (av - bv) * dir;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, sortBy, sortDir]);
 
   const SortIcon = ({ col }) =>
     sortBy === col
@@ -132,7 +149,7 @@ export function UserMarket() {
       : <ArrowUpDown className="w-3 h-3 text-gray-600" />;
 
   const myHoldingMap = {};
-  myHoldings.forEach((h) => { myHoldingMap[h.ticker_symbol] = h; });
+  liveHeld.forEach((h) => { myHoldingMap[h.ticker_symbol] = h; });
 
   return (
     <div className="p-4 lg:p-6 max-w-7xl mx-auto space-y-5">
@@ -194,6 +211,7 @@ export function UserMarket() {
             <table className="w-full">
               <thead>
                 <tr className="border-b border-white/5">
+                  <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium w-12">#</th>
                   <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium">Symbol</th>
                   <th className="px-5 py-3.5 text-left text-xs text-gray-600 font-medium cursor-pointer hover:text-gray-400" onClick={() => handleSort("current_price")}>
                     <div className="flex items-center gap-1">Price <SortIcon col="current_price" /></div>
@@ -208,7 +226,7 @@ export function UserMarket() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((s, i) => {
+                {sorted.map((s, i) => {
                   const changePct = parseFloat(s.price_change_percent || 0);
                   const up = changePct >= 0;
                   const myH = myHoldingMap[s.ticker_symbol];
@@ -217,15 +235,10 @@ export function UserMarket() {
                     <motion.tr key={s.stock_id || s.ticker_symbol} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.02 }}
                       onClick={() => navigate(`/user/stock/${s.ticker_symbol}`)}
                       className="border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors">
+                      <td className="px-5 py-3.5 text-sm text-gray-500 tabular-nums">{i + 1}</td>
                       <td className="px-5 py-3.5">
                         <div className="flex items-center gap-2.5">
-                          {s.logo_url ? (
-                            <img src={s.logo_url} alt={s.ticker_symbol} className="w-8 h-8 rounded-xl object-contain bg-white/5" onError={(e) => { e.target.style.display = "none"; }} />
-                          ) : (
-                            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-500/15 to-blue-600/15 border border-cyan-500/10 flex items-center justify-center">
-                              <span className="text-xs font-bold text-cyan-400">{(s.ticker_symbol || "").slice(0, 2)}</span>
-                            </div>
-                          )}
+                          <StockLogo symbol={s.ticker_symbol} name={s.company_name} size="md" />
                           <div>
                             <div className="text-sm font-bold text-white">{s.ticker_symbol}</div>
                             <div className="text-xs text-gray-600 truncate max-w-[100px]">{s.company_name}</div>

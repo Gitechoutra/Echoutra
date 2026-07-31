@@ -123,7 +123,17 @@ def _monitor_orders():
     # 2) Match + execute against the latest prices.
     process_pending_orders()
 
-    # 3) Fire any user price alerts the new prices have triggered.
+    # 3) Once the bell has rung, buy back any intraday short still open. Runs on
+    #    every tick and is a no-op while the market is open or when nothing is
+    #    short, so it needs no "have we done this today?" bookkeeping.
+    try:
+        from portal.helpers.order_engine import square_off_open_shorts
+        square_off_open_shorts()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f'[scheduler] intraday short square-off failed: {e}', exc_info=True)
+
+    # 4) Fire any user price alerts the new prices have triggered.
     try:
         from portal.helpers.price_alert_engine import process_price_alerts
         process_price_alerts()

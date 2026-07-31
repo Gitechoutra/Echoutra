@@ -63,7 +63,7 @@ class DevelopmentConfig(BaseConfig):
     DEBUG = True
     SQLALCHEMY_DATABASE_URI = os.getenv(
         'DEV_DATABASE_URL',
-        'mysql+pymysql://root:Mahesh2605@localhost:3306/stockmarket_db'
+        'mysql+pymysql://root:Ra123@localhost:3306/stockverse'
     )
     SQLALCHEMY_ECHO = bool(os.getenv('SQL_ECHO', False))
 
@@ -72,7 +72,7 @@ class TestingConfig(BaseConfig):
     TESTING = True
     SQLALCHEMY_DATABASE_URI = os.getenv(
         'TEST_DATABASE_URL',
-        'mysql+pymysql://root:Mahesh2605@localhost:3306/stockmarket_db_test'
+        'mysql+pymysql://root:Ra123@localhost:3306/stockverse'
     )
     JWT_ACCESS_TOKEN_EXPIRES  = timedelta(minutes=5)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(minutes=10)

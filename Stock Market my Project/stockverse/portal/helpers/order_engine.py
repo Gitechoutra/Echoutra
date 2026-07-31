@@ -28,20 +28,52 @@ BUY LIMIT/STOP orders reserve `available_balance -> locked_balance` at placement
 (see trade_orders route). On fill they are settled from the locked hold; call
 `execute_order(..., funds_locked=True)`. MARKET buys placed with cash on hand use
 `funds_locked=False`.
+
+Short selling (INTRADAY only)
+-----------------------------
+A SELL with no long position open opens a SHORT: shares sold first, bought back
+later. The position profits when the price falls.
+
+Collateral, not proceeds: the sale proceeds are NOT credited to the wallet at
+open. Instead 100% of the notional moves from `available_balance` into
+`locked_balance` and stays there until the position is covered. Crediting the
+proceeds would let a user spend or withdraw money they still owe on a position
+that can still move against them.
+
+    open  (SELL) : balance -= commission ; locked += quantity × sell_price
+    cover (BUY)  : locked  -= quantity × avg_entry_price
+                   balance += (avg_entry_price − buy_price) × quantity − commission
+
+Anything still short when the bell rings is bought back automatically at the last
+traded price — see `square_off_open_shorts()`. An intraday short cannot be left
+open overnight: the market is shut, so the user could not close it themselves.
+
+Trading window
+--------------
+Fills happen only while the market is in continuous trading — the window between
+market_calendar.MARKET_OPEN and MARKET_CLOSE on a trading day. Outside it the
+stored price is a last traded price, and filling against it would execute a trade
+at a price the market never offered. Queued INTRADAY orders that did not trigger during the
+session are expired at the close rather than carried overnight; their reserved
+buying power is released with them.
 """
 import logging
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from portal import db
-from portal.models.trade_orders       import TradeOrders, OrderType, OrderSide, OrderStatus, OrderDuration
+from portal.models.trade_orders       import (
+    TradeOrders, OrderType, OrderSide, OrderStatus, OrderDuration, TradeMode,
+    PositionEffect,
+)
 from portal.models.trade_executions   import TradeExecutions
-from portal.models.portfolio_holdings import PortfolioHoldings
+from portal.models.portfolio_holdings import PortfolioHoldings, PositionSide
 from portal.models.portfolios         import Portfolios
 from portal.models.wallets            import Wallets, WalletStatus
 from portal.models.wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
 from portal.models.transactions       import Transactions, TxnType, TxnStatus
 from portal.models.stocks             import Stocks
+from portal.helpers                   import market_calendar
 
 logger = logging.getLogger('stockmarket')
 
@@ -57,6 +89,112 @@ _QUEUED_TYPES  = (OrderType.LIMIT, OrderType.STOP, OrderType.STOP_LIMIT)
 def _d(v):
     """Coerce to Decimal safely."""
     return Decimal(str(v if v is not None else 0))
+
+
+# ── Positions ────────────────────────────────────────────────────────────────
+
+def open_position(portfolio_id, stock_id, trade_mode):
+    """The one live position for this (portfolio, stock, mode), long OR short.
+
+    A stock is never simultaneously long and short in the same mode — selling
+    into a long reduces it, and buying into a short covers it. That netting rule
+    is what keeps the wallet arithmetic tractable.
+    """
+    return PortfolioHoldings.query.filter_by(
+        portfolio_id=portfolio_id, stock_id=stock_id,
+        trade_mode=trade_mode or TradeMode.DELIVERY, is_active=True,
+    ).first()
+
+
+def is_short(holding) -> bool:
+    return bool(holding) and holding.position_side == PositionSide.SHORT
+
+
+def short_margin(quantity, price):
+    """Collateral required to sell `quantity` short at `price` — the full notional.
+
+    100% means the buy-back is funded however far the price runs against the
+    user, right up to a doubling. It is deliberately conservative: this platform
+    has no margin-call machinery, so the alternative to over-collateralising is a
+    wallet that can go negative.
+    """
+    return _d(quantity) * _d(price)
+
+
+def position_pnl(side, entry_price, exit_price, quantity):
+    """P&L from closing `quantity` of a position at `exit_price`.
+
+    The single definition of the sign convention: a LONG earns (exit − entry), a
+    SHORT earns (entry − exit). Used for both realized P&L on a fill and
+    unrealized P&L during revaluation, so the two can never disagree.
+    """
+    entry, exit_, qty = _d(entry_price), _d(exit_price), _d(quantity)
+    diff = (exit_ - entry) if side == PositionSide.LONG else (entry - exit_)
+    return diff * qty
+
+
+def settlement(action, quantity, price, entry_price=None):
+    """Cash a fill moves, as (balance_delta, locked_delta, commission).
+
+    Pure — no database, no order object. The whole money model for going long and
+    short lives here so it can be checked directly:
+
+        OPEN_LONG    pay the cost and the fee
+        CLOSE_LONG   receive the proceeds less the fee
+        OPEN_SHORT   pay the fee; the proceeds become locked collateral, NOT cash
+        COVER_SHORT  release that collateral; settle the profit or loss
+    """
+    qty, px    = _d(quantity), _d(price)
+    amount     = qty * px
+    commission = amount * COMMISSION_RATE
+
+    if action == 'OPEN_LONG':
+        return -(amount + commission), Decimal('0'), commission
+    if action == 'CLOSE_LONG':
+        return amount - commission, Decimal('0'), commission
+    if action == 'OPEN_SHORT':
+        return -commission, amount, commission
+    if action == 'COVER_SHORT':
+        entry    = _d(entry_price)
+        realized = position_pnl(PositionSide.SHORT, entry, px, qty)
+        # Release exactly what this quantity locked at entry. Precise even for a
+        # partial cover, because that is how the margin was accumulated.
+        return realized - commission, -(entry * qty), commission
+
+    raise ValueError(f'unknown settlement action: {action}')
+
+
+def plan_position_effect(order_side, portfolio_id, stock_id, trade_mode):
+    """Does this order OPEN a position or CLOSE one? Decided from what is open now.
+
+    Returns (PositionEffect, holding-or-None) so callers can validate against the
+    same position they are about to act on.
+    """
+    holding = open_position(portfolio_id, stock_id, trade_mode)
+
+    if order_side == OrderSide.SELL:
+        # Selling with a long open reduces it; otherwise it opens a short.
+        if holding and not is_short(holding):
+            return PositionEffect.CLOSE, holding
+        return PositionEffect.OPEN, holding
+
+    # BUY covers an open short, otherwise it opens/adds to a long.
+    if is_short(holding):
+        return PositionEffect.CLOSE, holding
+    return PositionEffect.OPEN, holding
+
+
+def _reserved_at_placement(order: TradeOrders) -> bool:
+    """True when this queued order had wallet funds locked when it was placed.
+
+    Legacy rows predate `position_effect`; for those, a queued BUY is the only
+    thing that ever reserved, which is exactly what the old code did.
+    """
+    if order.order_type == OrderType.MARKET:
+        return False
+    if order.position_effect:
+        return order.position_effect == PositionEffect.OPEN
+    return order.order_side == OrderSide.BUY
 
 
 # ── Trigger check ────────────────────────────────────────────────────────────
@@ -111,8 +249,9 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
     the master transactions ledger, portfolio_holdings, and the portfolio roll-up.
 
     Idempotent: returns None if the order is no longer fillable.
-    `funds_locked=True`  -> settle a BUY from its reserved locked_balance hold.
-    `funds_locked=False` -> BUY debits available cash directly (MARKET with cash on hand).
+    `funds_locked=True`  -> settle from the hold reserved at placement (queued
+                            BUY-to-open, or queued SELL-to-open-short).
+    `funds_locked=False` -> settle against available cash (a MARKET order).
     """
     if order.order_status not in _OPEN_STATUSES:
         return None
@@ -129,27 +268,59 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
     execution_price  = _d(fill_price)
     execution_amount = quantity * execution_price
     commission       = execution_amount * COMMISSION_RATE
-    net_amount       = execution_amount + commission if order.order_side == OrderSide.BUY \
-                       else execution_amount - commission
     now              = datetime.now(timezone.utc)
 
-    # ── SELL: verify the shares are still there before filling ────────────────
+    # ── Work out what this fill does to the position ─────────────────────────
     # Filter by trade_mode so DELIVERY holdings and INTRADAY positions in the same
     # stock stay completely separate (own quantities, own P&L, own open/close).
-    trade_mode = order.trade_mode or 'DELIVERY'
-    holding = PortfolioHoldings.query.filter_by(
-        portfolio_id=order.portfolio_id, stock_id=order.stock_id,
-        trade_mode=trade_mode, is_active=True
-    ).first()
+    #
+    # Re-derived here rather than trusting order.position_effect: a queued order
+    # can sit for hours, and the user may have covered or sold in the meantime.
+    trade_mode = order.trade_mode or TradeMode.DELIVERY
+    holding    = open_position(order.portfolio_id, order.stock_id, trade_mode)
+    shorting   = is_short(holding)
+
+    def _reject(reason):
+        order.order_status     = OrderStatus.REJECTED
+        order.rejection_reason = reason
+        order.cancelled_by     = 'SYSTEM'
+        order.cancelled_at     = now
+        order.update()
+        if funds_locked:
+            _release_hold_on_close(order)
+        logger.warning(f'[order_engine] order {order.order_id} rejected — {reason}')
+        return None
+
     if order.order_side == OrderSide.SELL:
-        if not holding or _d(holding.quantity) < quantity:
-            order.order_status     = OrderStatus.REJECTED
-            order.rejection_reason = 'Insufficient shares at execution time.'
-            order.cancelled_by     = 'SYSTEM'
-            order.cancelled_at     = now
-            order.update()
-            logger.warning(f'[order_engine] order {order.order_id} rejected — shares no longer held')
-            return None
+        if holding and not shorting:
+            action = 'CLOSE_LONG'
+            if _d(holding.quantity) < quantity:
+                return _reject('Insufficient shares at execution time.')
+        else:
+            action = 'OPEN_SHORT'
+            if trade_mode != TradeMode.INTRADAY:
+                return _reject('Insufficient shares — short selling is intraday only.')
+            # Re-check collateral at fill time; the wallet may have been drained
+            # between placing a queued short and it triggering.
+            required = short_margin(quantity, execution_price) + commission
+            held     = _d(order.estimated_amount) * (Decimal('1') + COMMISSION_RATE) if funds_locked else Decimal('0')
+            if _d(wallet.available_balance) + held < required:
+                return _reject('Insufficient funds for short margin at execution time.')
+    else:  # BUY
+        if shorting:
+            action = 'COVER_SHORT'
+            if _d(holding.quantity) < quantity:
+                return _reject('Cannot buy more than the open short quantity.')
+        else:
+            action = 'OPEN_LONG'
+
+    # The cash this fill moves. `net_amount` keeps its historical meaning for a
+    # long buy (the amount paid, a positive number); for everything else it is
+    # the signed effect on the wallet.
+    entry_price = _d(holding.average_buy_price) if action == 'COVER_SHORT' else None
+    balance_delta, locked_delta, commission = settlement(
+        action, quantity, execution_price, entry_price)
+    net_amount = (execution_amount + commission) if action == 'OPEN_LONG' else balance_delta
 
     # ── Record execution fill ────────────────────────────────────────────────
     exec_rec                   = TradeExecutions()
@@ -176,18 +347,20 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
     order.update()
 
     # ── Update wallet (respecting any locked hold) ────────────────────────────
-    if order.order_side == OrderSide.BUY:
-        wallet.balance -= net_amount
-        if funds_locked:
-            # Release the reservation made at placement; the invariant recompute
-            # below returns any over-reserved remainder to available_balance.
-            reserved = _d(order.estimated_amount) * (Decimal('1') + COMMISSION_RATE)
-            wallet.locked_balance = max(Decimal('0'), _d(wallet.locked_balance) - reserved)
-        else:
-            wallet.available_balance -= net_amount
+    # Any reservation made at placement is released first; the invariant recompute
+    # at the end returns whatever was over-reserved to available_balance.
+    if funds_locked:
+        reserved = _d(order.estimated_amount) * (Decimal('1') + COMMISSION_RATE)
+        wallet.locked_balance = max(Decimal('0'), _d(wallet.locked_balance) - reserved)
+
+    # `balance_delta` is negative on a losing short cover, and is deliberately not
+    # clamped at zero: a wallet that quietly refuses to record a loss is worse
+    # than one that shows the user what actually happened.
+    wallet.balance        = _d(wallet.balance) + balance_delta
+    wallet.locked_balance = max(Decimal('0'), _d(wallet.locked_balance) + locked_delta)
+
+    if action == 'OPEN_LONG':
         wallet.total_invested = _d(wallet.total_invested) + net_amount
-    else:  # SELL
-        wallet.balance += net_amount
 
     # Keep the core invariant: available = balance - locked.
     wallet.available_balance   = _d(wallet.balance) - _d(wallet.locked_balance)
@@ -204,7 +377,8 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
     wt.amount           = execution_amount
     wt.fee              = commission
     wt.net_amount       = net_amount
-    wt.description      = f'{order.order_type} {order.order_side} {quantity} {stock.ticker_symbol} @ {execution_price}'
+    wt.description      = (f'{_ACTION_LABELS[action]} {quantity} {stock.ticker_symbol} '
+                           f'@ {execution_price} ({order.order_type})')
     wt.reference_type   = 'TRADE_ORDER'
     wt.reference_id     = order.order_id
     wt.completed_at     = now
@@ -228,12 +402,14 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
     txn.save()
 
     # ── Update the portfolio holding ──────────────────────────────────────────
-    if order.order_side == OrderSide.BUY:
+    # Opening adds at a weighted-average entry price; closing reduces and books
+    # the realized P&L. The only difference between the two sides is the sign of
+    # that P&L: a long earns (exit − entry), a short earns (entry − exit).
+    if action in ('OPEN_LONG', 'OPEN_SHORT'):
         if holding:
             old_qty  = _d(holding.quantity)
-            old_cost = _d(holding.total_invested)
             new_qty  = old_qty + quantity
-            new_cost = old_cost + execution_amount
+            new_cost = _d(holding.total_invested) + execution_amount
             holding.quantity          = new_qty
             holding.total_invested    = new_cost
             holding.average_buy_price = new_cost / new_qty if new_qty > 0 else Decimal('0')
@@ -245,24 +421,26 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
             holding.stock_id          = order.stock_id
             holding.user_id           = order.user_id
             holding.trade_mode        = trade_mode
+            holding.position_side     = (PositionSide.SHORT if action == 'OPEN_SHORT'
+                                         else PositionSide.LONG)
             holding.quantity          = quantity
             holding.average_buy_price = execution_price
             holding.total_invested    = execution_amount
             holding.first_bought_at   = now
             holding.last_traded_at    = now
             holding.save()
-    else:  # SELL — reduce or close the holding
-        sell_qty   = quantity
-        cost_basis = _d(holding.average_buy_price) * sell_qty
-        realized   = execution_amount - cost_basis
-        new_qty    = _d(holding.quantity) - sell_qty
+    else:  # CLOSE_LONG / COVER_SHORT — reduce or close the position
+        entry    = _d(holding.average_buy_price)
+        realized = ((execution_amount - entry * quantity) if action == 'CLOSE_LONG'
+                    else (entry * quantity - execution_amount))
+        new_qty  = _d(holding.quantity) - quantity
         holding.realized_pnl = _d(holding.realized_pnl) + realized
         if new_qty <= Decimal('0'):
             holding.quantity  = Decimal('0')
             holding.is_active = False
         else:
             holding.quantity       = new_qty
-            holding.total_invested = new_qty * _d(holding.average_buy_price)
+            holding.total_invested = new_qty * entry
         holding.last_traded_at = now
         holding.update()
 
@@ -284,40 +462,78 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
                          f'portfolio {portfolio.portfolio_id}: {e}')
 
     logger.info(f'[order_engine] filled order {order.order_id} '
-                f'({order.order_side} {order.order_type}) {quantity} @ {execution_price}')
+                f'[{action}] {quantity} @ {execution_price}')
     return exec_rec
 
 
+_ACTION_LABELS = {
+    'OPEN_LONG':   'BUY',
+    'CLOSE_LONG':  'SELL',
+    'OPEN_SHORT':  'SHORT SELL',
+    'COVER_SHORT': 'BUY TO COVER',
+}
+
+
 def revalue_portfolio(portfolio: Portfolios):
-    """Recompute every active holding's market value and the portfolio totals
-    from current stock prices. Safe to call after any fill."""
+    """Recompute every active position's market value and the portfolio totals
+    from current stock prices. Safe to call after any fill.
+
+    Shorts are valued in the opposite direction: they gain when the price falls.
+    They also contribute differently to the portfolio total — a short's collateral
+    lives in the wallet's `locked_balance` (already counted inside wallet.balance),
+    so counting the notional here as well would double-count it. Only the short's
+    unrealized P&L belongs to portfolio worth.
+    """
     holdings      = PortfolioHoldings.query.filter_by(
         portfolio_id=portfolio.portfolio_id, is_active=True
     ).all()
     port_value    = Decimal('0')
     port_invested = Decimal('0')
-    port_day_pnl  = Decimal('0')   # today's P&L = Σ (current_price − previous_close) × qty
-    port_prev_val = Decimal('0')   # yesterday's value of the same holdings
+    port_day_pnl  = Decimal('0')   # today's P&L across every position
+    port_prev_val = Decimal('0')   # yesterday's value of the same positions
+    long_value    = Decimal('0')   # denominator for allocation %
     for h in holdings:
         stock = Stocks.query.get(h.stock_id)
         px    = _d(stock.current_price) if stock else Decimal('0')
         prev  = _d(stock.previous_close) if stock and stock.previous_close else px
         qty   = _d(h.quantity)
         inv   = _d(h.total_invested)
-        val   = qty * px
-        day   = (px - prev) * qty
-        h.current_price          = px
-        h.current_value          = val
-        h.unrealized_pnl         = val - inv
-        h.unrealized_pnl_percent = ((val - inv) / inv * 100) if inv > 0 else Decimal('0')
-        h.day_change             = day
-        h.day_change_percent     = ((px - prev) / prev * 100) if prev > 0 else Decimal('0')
-        port_value    += val
-        port_invested += inv
-        port_day_pnl  += day
-        port_prev_val += qty * prev
+        entry = _d(h.average_buy_price)
+
+        if h.position_side == PositionSide.SHORT:
+            val = qty * px                       # what it would cost to buy back
+            pnl = position_pnl(PositionSide.SHORT, entry, px, qty)
+            day = position_pnl(PositionSide.SHORT, prev, px, qty)
+            h.current_price          = px
+            h.current_value          = val
+            h.unrealized_pnl         = pnl
+            h.unrealized_pnl_percent = ((entry - px) / entry * 100) if entry > 0 else Decimal('0')
+            h.day_change             = day
+            h.day_change_percent     = ((prev - px) / prev * 100) if prev > 0 else Decimal('0')
+            # Collateral is in the wallet, not here — contribute the P&L only.
+            port_value    += pnl
+            port_day_pnl  += day
+            port_prev_val += qty * prev          # exposure the day move is measured against
+        else:
+            val = qty * px
+            day = (px - prev) * qty
+            h.current_price          = px
+            h.current_value          = val
+            h.unrealized_pnl         = val - inv
+            h.unrealized_pnl_percent = ((val - inv) / inv * 100) if inv > 0 else Decimal('0')
+            h.day_change             = day
+            h.day_change_percent     = ((px - prev) / prev * 100) if prev > 0 else Decimal('0')
+            port_value    += val
+            port_invested += inv
+            port_day_pnl  += day
+            port_prev_val += qty * prev
+            long_value    += val
     for h in holdings:
-        h.allocation_percent = ((_d(h.current_value) / port_value) * 100) if port_value > 0 else Decimal('0')
+        # Allocation is "share of capital deployed", which a short has none of.
+        h.allocation_percent = (
+            Decimal('0') if h.position_side == PositionSide.SHORT or long_value <= 0
+            else (_d(h.current_value) / long_value) * 100
+        )
 
     portfolio.total_invested       = port_invested
     portfolio.current_value        = port_value
@@ -333,14 +549,155 @@ def revalue_portfolio(portfolio: Portfolios):
 # ── Expiry helpers ───────────────────────────────────────────────────────────
 
 def _release_hold_on_close(order: TradeOrders):
-    """Give back a BUY order's locked funds when it is cancelled/expired unfilled."""
-    if order.order_side == OrderSide.BUY and order.order_type != OrderType.MARKET and order.estimated_amount:
-        wallet = Wallets.query.filter_by(user_id=order.user_id).first()
-        if wallet:
-            reserved = _d(order.estimated_amount) * (Decimal('1') + COMMISSION_RATE)
-            wallet.locked_balance    = max(Decimal('0'), _d(wallet.locked_balance) - reserved)
-            wallet.available_balance = _d(wallet.balance) - _d(wallet.locked_balance)
-            wallet.update()
+    """Give back an order's locked funds when it is cancelled/expired/rejected.
+
+    Covers both kinds of reservation: buying power held for a queued BUY, and
+    short margin held for a queued SELL that would have opened a short. Missing
+    the second would strand a user's collateral behind a cancelled order.
+    """
+    if not _reserved_at_placement(order) or not order.estimated_amount:
+        return
+    wallet = Wallets.query.filter_by(user_id=order.user_id).first()
+    if wallet:
+        reserved = _d(order.estimated_amount) * (Decimal('1') + COMMISSION_RATE)
+        wallet.locked_balance    = max(Decimal('0'), _d(wallet.locked_balance) - reserved)
+        wallet.available_balance = _d(wallet.balance) - _d(wallet.locked_balance)
+        wallet.update()
+
+
+def square_off_open_shorts() -> dict:
+    """Buy back every intraday short still open once the market has closed.
+
+    A short is an obligation to return shares. Leaving one open overnight would
+    trap the user: the market is shut, so they cannot cover it themselves, their
+    collateral stays locked, and they carry the opening gap. This is what a real
+    broker does with open MIS positions at the bell.
+
+    Long intraday positions are deliberately NOT touched — the user owns those
+    outright and can sell them whenever they choose.
+
+    Idempotent: once covered a position is `is_active=False`, so repeated ticks
+    after the close find nothing to do. Safe to call every tick.
+    """
+    from portal.helpers.notify import notify_user
+    from portal.models.notifications import NotificationType, NotificationPriority
+
+    if market_calendar.is_market_open():
+        return {'checked': 0, 'covered': 0, 'errors': 0}
+
+    shorts = PortfolioHoldings.query.filter_by(
+        trade_mode=TradeMode.INTRADAY,
+        position_side=PositionSide.SHORT,
+        is_active=True,
+    ).all()
+    if not shorts:
+        return {'checked': 0, 'covered': 0, 'errors': 0}
+
+    covered = errors = 0
+    now = datetime.now(timezone.utc)
+
+    for h in shorts:
+        try:
+            stock = Stocks.query.get(h.stock_id)
+            price = _d(stock.current_price) if stock else Decimal('0')
+            qty   = _d(h.quantity)
+            if price <= 0 or qty <= 0:
+                # No price to cover against; leave it for the next tick rather
+                # than booking a fill at zero.
+                continue
+
+            # Route the cover through a real order so it lands in the user's
+            # order history and every ledger, exactly like a manual buy-back.
+            order                    = TradeOrders()
+            order.user_id            = h.user_id
+            order.stock_id           = h.stock_id
+            order.portfolio_id       = h.portfolio_id
+            order.order_type         = OrderType.MARKET
+            order.order_side         = OrderSide.BUY
+            order.trade_mode         = TradeMode.INTRADAY
+            order.position_effect    = PositionEffect.CLOSE
+            order.order_status       = OrderStatus.PENDING
+            order.order_duration     = OrderDuration.DAY
+            order.quantity           = qty
+            order.filled_quantity    = Decimal('0')
+            order.remaining_quantity = qty
+            order.estimated_amount   = qty * price
+            order.submitted_at       = now
+            order.order_source       = 'SYSTEM'
+            order.save()
+
+            if execute_order(order, price, funds_locked=False) is None:
+                continue
+            covered += 1
+
+            pnl = _d(h.realized_pnl)
+            try:
+                notify_user(
+                    h.user_id,
+                    NotificationType.ORDER_FILLED,
+                    'Short position squared off at market close',
+                    f'Your intraday short of {float(qty):g} {stock.ticker_symbol} was '
+                    f'bought back at Rs {float(price):.2f} when the market closed. '
+                    f'Realised P&L: Rs {float(pnl):.2f}.',
+                    priority=NotificationPriority.HIGH,
+                    reference_type='TRADE_ORDER',
+                    reference_id=order.order_id,
+                )
+            except Exception:
+                logger.exception(f'[order_engine] square-off notify failed for holding {h.holding_id}')
+
+        except Exception:
+            db.session.rollback()
+            errors += 1
+            logger.exception(f'[order_engine] square-off failed for holding {h.holding_id}')
+
+    if covered or errors:
+        logger.info(f'[order_engine] square-off: checked={len(shorts)} '
+                    f'covered={covered} errors={errors}')
+    return {'checked': len(shorts), 'covered': covered, 'errors': errors}
+
+
+def _notify_intraday_expiry(order: TradeOrders):
+    """Tell the user their intraday order was cancelled at the close.
+
+    Silent cancellation is the failure mode that matters here — the user left a
+    stop-loss running and needs to know it is no longer protecting them. Never
+    let a notification failure undo the cancellation itself.
+    """
+    try:
+        from portal.helpers.notify import notify_user
+        from portal.models.notifications import NotificationType, NotificationPriority
+
+        stock  = Stocks.query.get(order.stock_id)
+        symbol = stock.ticker_symbol if stock else 'the stock'
+        notify_user(
+            order.user_id,
+            NotificationType.ORDER_CANCELLED,
+            'Intraday order cancelled at market close',
+            f'Your intraday {order.order_type} {order.order_side} order for '
+            f'{float(order.quantity):g} {symbol} did not trigger before the market '
+            f'closed at {market_calendar.CLOSE_LABEL} IST and has been cancelled. '
+            f'Any reserved funds are back in your wallet.',
+            priority=NotificationPriority.MEDIUM,
+            reference_type='TRADE_ORDER',
+            reference_id=order.order_id,
+        )
+    except Exception:
+        logger.exception(f'[order_engine] close-expiry notify failed for order {order.order_id}')
+
+
+def _expires_at_close(order: TradeOrders, market_open: bool) -> bool:
+    """True when a still-queued INTRADAY order must be killed because the session
+    is over.
+
+    An intraday order only makes sense inside the session it was placed in: the
+    position it would open has to be closed the same day. Once the market is shut
+    (after the close, on a weekend, or on a holiday) it can never legitimately fill,
+    so it is expired instead of sitting there holding the user's buying power
+    until the next IST date happens to roll over.
+    """
+    return not market_open and \
+        (order.trade_mode or TradeMode.DELIVERY) == TradeMode.INTRADAY
 
 
 def _is_expired(order: TradeOrders, now_utc: datetime) -> bool:
@@ -363,11 +720,16 @@ def process_pending_orders() -> dict:
     Scan every live queued order, fill the ones whose trigger price is met, and
     expire stale DAY orders. Each order is handled independently so one failure
     can't stall the rest. Returns a summary dict. Called by the scheduler.
+
+    Fills only happen during continuous trading. Expiry still runs when the
+    market is shut — that is precisely when queued intraday orders have to be
+    cleared and their reserved funds handed back.
     """
     from portal.helpers.notify import notify_user
     from portal.models.notifications import NotificationType, NotificationPriority
 
     filled = expired = errors = 0
+    market_open = market_calendar.is_market_open()
 
     orders = TradeOrders.query.filter(
         TradeOrders.order_status.in_(_OPEN_STATUSES),
@@ -381,14 +743,23 @@ def process_pending_orders() -> dict:
     for order in orders:
         try:
             # 1) Expire stale orders first (releasing any hold).
-            if _is_expired(order, now):
+            at_close = _expires_at_close(order, market_open)
+            if at_close or _is_expired(order, now):
                 order.order_status     = OrderStatus.EXPIRED
                 order.cancelled_at     = now
                 order.cancelled_by     = 'SYSTEM'
-                order.rejection_reason = 'Order expired (duration lapsed).'
+                order.rejection_reason = (market_calendar.INTRADAY_CLOSE_EXPIRY_REASON
+                                          if at_close else 'Order expired (duration lapsed).')
                 order.update()
                 _release_hold_on_close(order)
                 expired += 1
+                if at_close:
+                    _notify_intraday_expiry(order)
+                continue
+
+            # 2) Nothing fills outside the session — the price on file is a last
+            #    traded price, not a market anyone can trade against.
+            if not market_open:
                 continue
 
             # Orders placed before an admin froze the wallet must not keep filling
@@ -403,13 +774,13 @@ def process_pending_orders() -> dict:
                 continue
 
             fill_px  = resolve_fill_price(order, price)
-            funds_locked = (order.order_side == OrderSide.BUY)
-            exec_rec = execute_order(order, fill_px, funds_locked=funds_locked)
+            exec_rec = execute_order(order, fill_px,
+                                     funds_locked=_reserved_at_placement(order))
             if exec_rec is None:
                 continue
             filled += 1
 
-            # 2) Notify the user their order filled.
+            # 3) Notify the user their order filled.
             try:
                 notify_user(
                     order.user_id,

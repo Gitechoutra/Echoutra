@@ -24,6 +24,12 @@ def _ensure_schema():
     additions = [
         ('trade_orders',       'trade_mode',       "VARCHAR(10) DEFAULT 'DELIVERY'"),
         ('portfolio_holdings', 'trade_mode',       "VARCHAR(10) DEFAULT 'DELIVERY'"),
+        # Short selling. Existing rows default to LONG, which is what they are.
+        ('portfolio_holdings', 'position_side',    "VARCHAR(6) DEFAULT 'LONG'"),
+        # Whether an order opens or closes a position. Set at placement so a
+        # queued SELL that opens a short can have its margin reserved, and
+        # released again if it is cancelled or expires unfilled.
+        ('trade_orders',       'position_effect',  "VARCHAR(10) DEFAULT NULL"),
     ]
     db_name = db.session.execute(text("SELECT DATABASE()")).scalar()
     for table, column, ddl in additions:

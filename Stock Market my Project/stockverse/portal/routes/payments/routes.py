@@ -259,7 +259,25 @@ class VerifyPayment(Resource):
             stock = Stocks.query.get(stock_id)
             if not stock:
                 return jsonify(bool=False, status=404, response={'message': 'Stock not found'})
-            
+
+            # The market-hours gate applies to this path too — otherwise the
+            # pay-then-buy flow is a way around /trade_orders/place. The payment
+            # itself stands: the money is already credited to the wallet above,
+            # so the user keeps it and can place the trade when the market opens.
+            from portal.helpers import market_calendar
+            blocked = market_calendar.trading_blocked_reason(
+                (trade_order_data.get('trade_mode') or 'DELIVERY').upper())
+            if blocked:
+                status = market_calendar.describe()
+                return jsonify(bool=False, status=403, response={
+                    'message':      f'{blocked} Your payment of Rs {amount:.2f} has been '
+                                    f'credited to your wallet — place the trade when the '
+                                    f'market reopens.',
+                    'wallet_credited': amount,
+                    'market_state':    status['state'],
+                    'next_open':       status['next_open'],
+                })
+
             # Resolve portfolio
             portfolio = Portfolios.query.filter_by(user_id=user_id, is_default=True, is_active=True).first()
             if not portfolio:

@@ -27,6 +27,10 @@ list_parser.add_argument('asset_type', type=str, required=False, location='args'
 list_parser.add_argument('sort_by',    type=str, default='current_price', location='args')
 list_parser.add_argument('order',      type=str, default='desc', location='args')
 
+quotes_parser = reqparse.RequestParser()
+quotes_parser.add_argument('ids',     type=str, required=False, location='args')  # comma-separated stock_ids
+quotes_parser.add_argument('symbols', type=str, required=False, location='args')  # comma-separated tickers
+
 history_parser = reqparse.RequestParser()
 history_parser.add_argument('interval', type=str, default='1d',    location='args')
 history_parser.add_argument('from_date',type=str, required=False,  location='args')
@@ -135,6 +139,88 @@ class ListStocks(Resource):
                 'page':        page,
                 'per_page':    per_page,
                 'total_pages': paginated.pages,
+            })
+
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify(bool=False, status=500, response={'message': str(e)})
+
+
+# ── Live quotes: one poll that feeds every price on screen ────────────────────
+
+def _f(v):
+    """Decimal -> float, preserving a genuine 0.
+
+    `float(v) if v else None` (used by _stock_dict) turns a stock that is exactly
+    flat on the day into `price_change: null`, which the UI then renders as a
+    blank instead of "0.00".
+    """
+    return float(v) if v is not None else None
+
+
+@ns.route('/quotes')
+class LiveQuotes(Resource):
+    @ns.doc(description='Price-only snapshot of every active stock — the single '
+                        'poll that keeps prices in sync across the whole app. '
+                        'Optionally narrow with ?ids=1,2,3 or ?symbols=TCS,INFY.')
+    @jwt_required()
+    @ns.expect(quotes_parser)
+    def get(self):
+        try:
+            from portal.helpers import market_calendar
+            from portal.helpers.market_data import health
+
+            args = quotes_parser.parse_args(strict=False)
+
+            # with_entities keeps this to one SELECT of just the price columns.
+            # /stocks/list can't be used for polling: it hydrates full ORM objects
+            # and runs a holdings query per stock, so a 10s poll of 50 stocks is
+            # 50 extra round-trips every tick.
+            q = Stocks.query.with_entities(
+                Stocks.stock_id, Stocks.ticker_symbol, Stocks.currency,
+                Stocks.current_price, Stocks.open_price, Stocks.previous_close,
+                Stocks.price_change, Stocks.price_change_percent,
+                Stocks.day_high, Stocks.day_low, Stocks.volume,
+                Stocks.is_tradable, Stocks.last_price_update,
+            ).filter(Stocks.status == StockStatus.ACTIVE)
+
+            if args.get('ids'):
+                ids = [int(i) for i in args['ids'].split(',') if i.strip().isdigit()]
+                q = q.filter(Stocks.stock_id.in_(ids or [-1]))
+            if args.get('symbols'):
+                syms = [s.strip().upper() for s in args['symbols'].split(',') if s.strip()]
+                q = q.filter(Stocks.ticker_symbol.in_(syms or ['-']))
+
+            rows   = q.all()
+            status = market_calendar.describe()
+            live   = bool(status['is_open'] and health()['healthy'])
+
+            return jsonify(bool=True, status=200, response={
+                'quotes': [{
+                    'stock_id':             r.stock_id,
+                    'ticker_symbol':        r.ticker_symbol,
+                    'currency':             r.currency,
+                    'current_price':        _f(r.current_price),
+                    'open_price':           _f(r.open_price),
+                    'previous_close':       _f(r.previous_close),
+                    'price_change':         _f(r.price_change),
+                    'price_change_percent': _f(r.price_change_percent),
+                    'day_high':             _f(r.day_high),
+                    'day_low':              _f(r.day_low),
+                    'volume':               r.volume,
+                    'is_tradable':          r.is_tradable,
+                    'last_price_update':    str(r.last_price_update) if r.last_price_update else None,
+                } for r in rows],
+                'count': len(rows),
+                # Market state rides along so a client needs ONE poll, not two,
+                # and can never show a price and a freshness badge from different
+                # moments in time.
+                'market_state':     status['state'],
+                'is_open':          status['is_open'],
+                'prices_are_live':  live,
+                'session_label':    status['session_label'],
+                'server_time_ist':  status['server_time_ist'],
+                'poll_interval_ms': 10_000 if live else 60_000,
             })
 
         except Exception as e:

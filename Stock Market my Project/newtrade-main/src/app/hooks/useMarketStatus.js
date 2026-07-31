@@ -78,45 +78,17 @@ export function useMarketStatus() {
   return { status, loading, error, refresh: fetchStatus };
 }
 
-/**
- * Runs `fetcher` on the cadence the market dictates.
+/*
+ * `useLivePrices(fetcher, …)` used to live here: it re-ran a page's own fetch on
+ * the market cadence. It has been removed deliberately.
  *
- * While the market is open it polls at the server's interval; once closed it
- * stops entirely, because the last traded price cannot change until the next
- * session. Pass `enabled: false` to pause (e.g. a modal is open).
+ * Each page that used it polled a different endpoint at a different moment, so
+ * the same stock could show two prices in two places at once — and pages that
+ * never adopted it (portfolio, watchlist, dashboard, stock detail) simply never
+ * updated at all. Prices now come from a single poll in
+ * `context/LiveQuotesContext`. Re-introducing a per-page price poll would
+ * recreate exactly the drift that layer exists to prevent.
  */
-export function useLivePrices(fetcher, { status, enabled = true } = {}) {
-  const timerRef = useRef(null);
-  const fetcherRef = useRef(fetcher);
-
-  // Keep the latest closure without restarting the timer on every render.
-  useEffect(() => { fetcherRef.current = fetcher; }, [fetcher]);
-
-  const isLive = Boolean(status?.prices_are_live);
-  const interval = status?.poll_interval_ms || DEFAULT_POLL_MS;
-
-  useEffect(() => {
-    if (!enabled || !isLive) return undefined;
-
-    let cancelled = false;
-    const tick = async () => {
-      if (cancelled || !getToken()) return;
-      try {
-        await fetcherRef.current?.();
-      } catch {
-        // A failed refresh leaves the previous price on screen; the staleness
-        // badge (driven by market_status) is what tells the user about it.
-      }
-      if (!cancelled) timerRef.current = setTimeout(tick, interval);
-    };
-    timerRef.current = setTimeout(tick, interval);
-
-    return () => {
-      cancelled = true;
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [enabled, isLive, interval]);
-}
 
 /** Format an ISO timestamp as an IST wall-clock time for "last traded at ...". */
 export function formatIst(iso, { withDate = false } = {}) {

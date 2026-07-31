@@ -67,10 +67,16 @@ def _holding_dict(h: PortfolioHoldings) -> dict:
         'logo_url':               h.stock.logo_url      if h.stock else None,
         'sector':                 h.stock.sector        if h.stock else None,
         'trade_mode':             h.trade_mode or 'DELIVERY',
+        # LONG (bought first) or SHORT (sold first, bought back to close). For a
+        # SHORT, average_buy_price is the price it was SOLD at and the P&L runs
+        # the other way — the position gains as the price falls.
+        'position_side':          h.position_side or 'LONG',
+        'is_short':               (h.position_side == 'SHORT'),
         'is_active':              bool(h.is_active),
         'position_status':        ('OPEN' if h.is_active else 'CLOSED'),
         'quantity':               float(h.quantity),
         'average_buy_price':      float(h.average_buy_price),
+        'average_entry_price':    float(h.average_buy_price),   # clearer name for shorts
         'total_invested':         float(h.total_invested),
         'current_price':          float(h.current_price)  if h.current_price  else None,
         'previous_close':         float(h.stock.previous_close) if h.stock and h.stock.previous_close else None,
