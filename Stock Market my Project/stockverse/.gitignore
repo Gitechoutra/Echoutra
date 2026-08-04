@@ -11,3 +11,6 @@ log/*
 log/
 .env
 web.config
+dev.ini
+venv/
+*.sqlite3

@@ -26,7 +26,7 @@ import app as _app  # noqa: F401  — registers every model with SQLAlchemy
 from portal import db
 from portal.helpers import market_calendar as mc
 from portal.helpers.order_engine import (
-    execute_order, square_off_open_shorts, open_position, COMMISSION_RATE,
+    execute_order, square_off_intraday_positions, open_position, COMMISSION_RATE,
 )
 from portal.models.users import Users
 from portal.models.roles import Roles
@@ -305,33 +305,241 @@ def test_open_shorts_are_bought_back_at_the_close(flask_app, ctx, monkeypatch):
 
     # While the market is open the sweep must do nothing at all.
     monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: True)
-    assert square_off_open_shorts()['covered'] == 0
+    assert square_off_intraday_positions()['squared_off'] == 0
     assert _position(ctx) is not None
 
     # After the bell it buys the shares back at the last traded price.
     monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: False)
-    assert square_off_open_shorts()['covered'] == 1
+    assert square_off_intraday_positions()['squared_off'] == 1
 
     assert _position(ctx) is None
     w = _wallet(ctx)
     assert D(w.locked_balance) == 0
     _assert_invariant(w)
 
-    # Running again is a no-op — nothing is left short.
-    assert square_off_open_shorts()['covered'] == 0
+    # Running again is a no-op — nothing is left open.
+    assert square_off_intraday_positions()['squared_off'] == 0
 
 
-def test_long_intraday_positions_are_left_alone_at_the_close(flask_app, ctx, monkeypatch):
-    """Only shorts are force-closed. A long is owned outright and the user
-    decides when to sell it."""
+def test_long_intraday_positions_are_squared_off_too(flask_app, ctx, monkeypatch):
+    """Intraday means settled the same session. A long left open would sit there
+    overnight with no way for the user to close it — the order gate refuses
+    trades outside hours."""
     _set_price(ctx, 1000)
     execute_order(_order(ctx, OrderSide.BUY, 2, PositionEffect.OPEN),
                   D(1000), funds_locked=False)
     pos = _position(ctx)
-    assert pos.position_side == PositionSide.LONG
+    assert pos is not None and pos.position_side == PositionSide.LONG
+
+    before = D(_wallet(ctx).balance)
+    _set_price(ctx, 1100)
+
+    monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: True)
+    assert square_off_intraday_positions()['squared_off'] == 0   # still trading
 
     monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: False)
-    square_off_open_shorts()
+    assert square_off_intraday_positions()['squared_off'] == 1
 
-    still_there = _position(ctx)
-    assert still_there is not None and still_there.position_side == PositionSide.LONG
+    # Position closed, profit booked, proceeds in the wallet.
+    assert _position(ctx) is None
+    closed = PortfolioHoldings.query.filter_by(
+        portfolio_id=ctx['portfolio'].portfolio_id,
+        stock_id=ctx['stock'].stock_id,
+        trade_mode=TradeMode.INTRADAY).order_by(
+            PortfolioHoldings.holding_id.desc()).first()
+    assert closed.is_active is False
+    assert D(closed.realized_pnl) == D(200)      # (1100 - 1000) x 2
+
+    w = _wallet(ctx)
+    _assert_invariant(w)
+    fee = D(2) * D(1100) * COMMISSION_RATE
+    assert D(w.balance) == before + D(2200) - fee
+
+
+def test_delivery_holdings_survive_the_close(flask_app, ctx, monkeypatch):
+    """Delivery is owned outright with no same-day obligation — the sweep must
+    not touch it."""
+    _set_price(ctx, 1000)
+    o = _order(ctx, OrderSide.BUY, 1, PositionEffect.OPEN)
+    o.trade_mode = TradeMode.DELIVERY
+    o.update()
+    execute_order(o, D(1000), funds_locked=False)
+
+    held = open_position(ctx['portfolio'].portfolio_id, ctx['stock'].stock_id,
+                         TradeMode.DELIVERY)
+    assert held is not None
+
+    monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: False)
+    square_off_intraday_positions()
+
+    db.session.expire_all()
+    still = open_position(ctx['portfolio'].portfolio_id, ctx['stock'].stock_id,
+                          TradeMode.DELIVERY)
+    assert still is not None and still.is_active is True
+
+
+def test_square_off_records_the_trade_in_history(flask_app, ctx, monkeypatch):
+    """The settlement must be a real trade, not a silent balance adjustment: the
+    user has to be able to see what closed their position and at what price."""
+    from portal.models.transactions import Transactions
+    from portal.models.trade_executions import TradeExecutions
+
+    _set_price(ctx, 1000)
+    execute_order(_order(ctx, OrderSide.BUY, 1, PositionEffect.OPEN),
+                  D(1000), funds_locked=False)
+    _set_price(ctx, 1050)
+
+    monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: False)
+    square_off_intraday_positions()
+    db.session.expire_all()
+
+    closing = (TradeOrders.query
+               .filter_by(user_id=ctx['user'].user_id, order_source='SYSTEM')
+               .order_by(TradeOrders.order_id.desc()).first())
+    assert closing is not None
+    assert closing.order_status == OrderStatus.FILLED
+    assert closing.order_side == OrderSide.SELL
+    assert D(closing.avg_fill_price) == D(1050)
+
+    # ...and it reached the ledgers a manual trade writes to.
+    assert TradeExecutions.query.filter_by(order_id=closing.order_id).count() == 1
+    assert Transactions.query.filter_by(order_id=closing.order_id).count() == 1
+
+
+# ── Attached stop-loss ──────────────────────────────────────────────────────
+# A stop-loss can sell a user's shares without them touching anything, so the
+# rules about when it exists and when it fires are pinned here.
+
+def _entry(ctx, side, quantity, stop_loss=None, effect=PositionEffect.OPEN):
+    o = _order(ctx, side, quantity, effect)
+    if stop_loss is not None:
+        o.stop_loss_price = D(stop_loss)
+        o.update()
+    return o
+
+
+def _child_of(order):
+    db.session.expire_all()
+    return TradeOrders.query.filter_by(parent_order_id=order.order_id).first()
+
+
+def _flatten(ctx):
+    """Close whatever is open so the next test starts from nothing."""
+    pos = _position(ctx)
+    if pos:
+        side = OrderSide.BUY if pos.position_side == PositionSide.SHORT else OrderSide.SELL
+        execute_order(_order(ctx, side, float(pos.quantity), PositionEffect.CLOSE),
+                      D(ctx['stock'].current_price), funds_locked=False)
+    for o in TradeOrders.query.filter(
+            TradeOrders.order_status.in_([OrderStatus.PENDING, OrderStatus.OPEN])).all():
+        o.order_status = OrderStatus.CANCELLED
+        o.update()
+
+
+def test_a_long_entry_arms_a_sell_stop_below_it(flask_app, ctx):
+    _flatten(ctx)
+    _set_price(ctx, 1000)
+    entry = _entry(ctx, OrderSide.BUY, 5, stop_loss=950)
+    assert execute_order(entry, D(1000), funds_locked=False) is not None
+
+    sl = _child_of(entry)
+    assert sl is not None, 'filling an entry with a stop loss must arm a real order'
+    assert sl.order_side == OrderSide.SELL          # long exits by selling
+    assert sl.order_type == OrderType.STOP
+    assert D(sl.stop_price) == D(950)
+    assert D(sl.quantity) == 5                       # the quantity actually filled
+    assert sl.position_effect == PositionEffect.CLOSE
+    assert sl.order_status == OrderStatus.PENDING
+    assert sl.order_source == 'SYSTEM'
+
+
+def test_a_short_entry_arms_a_buy_stop_above_it(flask_app, ctx):
+    _flatten(ctx)
+    _set_price(ctx, 1000)
+    entry = _entry(ctx, OrderSide.SELL, 2, stop_loss=1060)
+    assert execute_order(entry, D(1000), funds_locked=False) is not None
+
+    sl = _child_of(entry)
+    assert sl is not None
+    assert sl.order_side == OrderSide.BUY            # a short exits by buying back
+    assert D(sl.stop_price) == D(1060)
+
+
+def test_no_stop_loss_means_no_child_order(flask_app, ctx):
+    _flatten(ctx)
+    _set_price(ctx, 1000)
+    entry = _entry(ctx, OrderSide.BUY, 1)            # none attached
+    execute_order(entry, D(1000), funds_locked=False)
+    assert _child_of(entry) is None
+
+
+def test_arming_is_idempotent(flask_app, ctx):
+    """A retried fill must not leave two stops on one position — that would sell
+    the shares twice."""
+    from portal.helpers.order_engine import arm_stop_loss
+    _flatten(ctx)
+    _set_price(ctx, 1000)
+    entry = _entry(ctx, OrderSide.BUY, 3, stop_loss=970)
+    execute_order(entry, D(1000), funds_locked=False)
+
+    assert arm_stop_loss(entry, D(3), 'OPEN_LONG') is None
+    assert TradeOrders.query.filter_by(parent_order_id=entry.order_id).count() == 1
+
+
+def test_the_stop_fires_and_closes_the_position(flask_app, ctx, monkeypatch):
+    """The whole point: the user sets it once at entry and the engine does the
+    rest, with no further action from them."""
+    from portal.helpers.order_engine import process_pending_orders
+    _flatten(ctx)
+    monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: True)
+
+    _set_price(ctx, 1000)
+    entry = _entry(ctx, OrderSide.BUY, 4, stop_loss=950)
+    execute_order(entry, D(1000), funds_locked=False)
+    assert _position(ctx) is not None
+
+    # Above the stop — nothing happens.
+    _set_price(ctx, 975)
+    process_pending_orders()
+    assert _position(ctx) is not None
+
+    # Price hits the stop.
+    _set_price(ctx, 950)
+    process_pending_orders()
+
+    assert _position(ctx) is None, 'the stop should have sold the position'
+    sl = _child_of(entry)
+    assert sl.order_status == OrderStatus.FILLED
+    closed = PortfolioHoldings.query.filter_by(
+        portfolio_id=ctx['portfolio'].portfolio_id, stock_id=ctx['stock'].stock_id,
+        trade_mode=TradeMode.INTRADAY).order_by(PortfolioHoldings.holding_id.desc()).first()
+    assert D(closed.realized_pnl) == D(-200)         # (950 - 1000) x 4
+
+
+def test_a_stale_stop_cannot_open_a_short(flask_app, ctx, monkeypatch):
+    """The dangerous case: the user sells out by hand, leaving the stop armed.
+    On trigger it must be refused, not sail through the SELL path and open a
+    brand-new short position in a stock they just exited."""
+    from portal.helpers.order_engine import process_pending_orders
+    _flatten(ctx)
+    monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: True)
+
+    _set_price(ctx, 1000)
+    entry = _entry(ctx, OrderSide.BUY, 2, stop_loss=900)
+    execute_order(entry, D(1000), funds_locked=False)
+    sl = _child_of(entry)
+    assert sl is not None
+
+    # User exits manually at a profit; the stop is still sitting there.
+    execute_order(_order(ctx, OrderSide.SELL, 2, PositionEffect.CLOSE),
+                  D(1100), funds_locked=False)
+    assert _position(ctx) is None
+
+    _set_price(ctx, 900)
+    process_pending_orders()
+
+    db.session.expire_all()
+    sl = TradeOrders.query.get(sl.order_id)
+    assert sl.order_status == OrderStatus.REJECTED
+    assert 'already closed' in sl.rejection_reason.lower()
+    assert _position(ctx) is None, 'a stale stop must never open a new position'

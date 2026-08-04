@@ -87,6 +87,14 @@ class TradeOrders(db.Model):
     # Prices
     limit_price = db.Column(db.Numeric(15, 4), nullable=True)     # For LIMIT orders
     stop_price = db.Column(db.Numeric(15, 4), nullable=True)      # For STOP orders
+
+    # Attached stop-loss. Independent of `stop_price`: that one is an ENTRY
+    # trigger ("buy me in when it reaches X"), while this is protection for the
+    # position the order creates ("once I'm in, get me out if it turns"). Set on
+    # an entry order; when that order fills, the engine places a real STOP order
+    # for the filled quantity and points its parent_order_id back here.
+    stop_loss_price = db.Column(db.Numeric(15, 4), nullable=True)
+    parent_order_id = db.Column(db.Integer, db.ForeignKey('trade_orders.order_id'), nullable=True, index=True)
     avg_fill_price = db.Column(db.Numeric(15, 4), nullable=True)  # Actual execution average price
     estimated_amount = db.Column(db.Numeric(15, 2), nullable=True)
     filled_amount = db.Column(db.Numeric(15, 2), nullable=True)

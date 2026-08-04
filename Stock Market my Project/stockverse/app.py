@@ -30,6 +30,10 @@ def _ensure_schema():
         # queued SELL that opens a short can have its margin reserved, and
         # released again if it is cancelled or expires unfilled.
         ('trade_orders',       'position_effect',  "VARCHAR(10) DEFAULT NULL"),
+        # Attached stop-loss: the protective exit an entry order carries, and the
+        # link from the auto-placed stop back to the order that armed it.
+        ('trade_orders',       'stop_loss_price',  "DECIMAL(15,4) DEFAULT NULL"),
+        ('trade_orders',       'parent_order_id',  "INT DEFAULT NULL"),
     ]
     db_name = db.session.execute(text("SELECT DATABASE()")).scalar()
     for table, column, ddl in additions:

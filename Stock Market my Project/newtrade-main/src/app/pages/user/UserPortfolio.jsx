@@ -1117,21 +1117,32 @@ function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus 
             <tbody>
               {ranked.map((h, idx) => {
                 const short    = h.position_side === "SHORT" || h.is_short === true;
+                const closed   = h.is_active === false || h.position_status === "CLOSED";
                 const qty      = parseFloat(h.quantity          || 0);
                 const avgCost  = parseFloat(h.average_buy_price || 0);
                 const currPx   = parseFloat(h.current_price || 0) > 0 ? parseFloat(h.current_price) : avgCost;
                 const mktVal   = parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : qty * currPx;
                 const invested = parseFloat(h.total_invested || qty * avgCost);
-                // A short's P&L runs the other way — it gains as the price falls.
+                const realized = parseFloat(h.realized_pnl || 0);
+
+                // A closed position's P&L is settled — show the realized figure.
+                // Its `unrealized_pnl` is whatever it happened to be at the last
+                // revaluation before it closed, which is stale and misleading now
+                // that the trade is booked.
+                // A short's unrealized P&L runs the other way: it gains as the
+                // price falls.
                 const fallbackPnl = short ? (avgCost - currPx) * qty : mktVal - invested;
-                const pnl      = parseFloat(h.unrealized_pnl || 0) !== 0 ? parseFloat(h.unrealized_pnl) : fallbackPnl;
-                const pnlPct   = parseFloat(h.unrealized_pnl_percent || 0) !== 0
-                  ? parseFloat(h.unrealized_pnl_percent)
-                  : (avgCost > 0 ? ((short ? avgCost - currPx : currPx - avgCost) / avgCost) * 100 : 0);
+                const pnl      = closed
+                  ? realized
+                  : (parseFloat(h.unrealized_pnl || 0) !== 0 ? parseFloat(h.unrealized_pnl) : fallbackPnl);
+                const pnlPct   = closed
+                  ? (invested > 0 ? (realized / invested) * 100 : 0)
+                  : (parseFloat(h.unrealized_pnl_percent || 0) !== 0
+                      ? parseFloat(h.unrealized_pnl_percent)
+                      : (avgCost > 0 ? ((short ? avgCost - currPx : currPx - avgCost) / avgCost) * 100 : 0));
                 const up       = pnl >= 0;
-                const weight   = totalValue > 0 ? (mktVal / totalValue) * 100 : 0;
+                const weight   = totalValue > 0 && !closed ? (mktVal / totalValue) * 100 : 0;
                 const ticker   = h.ticker_symbol || "—";
-                const closed   = h.is_active === false || h.position_status === "CLOSED";
                 return (
                   <motion.tr
                     key={h.holding_id || idx}

@@ -11,6 +11,7 @@ import { MarketClosedNotice } from "../../components/MarketStatusBadge";
 import { useMarketStatus } from "../../hooks/useMarketStatus";
 import { useLiveQuotes, liveStock, liveHolding } from "../../context/LiveQuotesContext";
 import { StockLogo } from "../../components/StockLogo";
+import { filterQuantity, filterDecimal } from "../../utils/validation";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -68,7 +69,8 @@ export function UserStockDetail() {
   const [tradeMode,    setTradeMode]    = useState("delivery");   // delivery | intraday
   const [orderType,    setOT]           = useState("market");
   const [qty,          setQty]          = useState("");
-  const [limitPx,      setLimitPx]      = useState("");
+  const [limitPx,      setLimitPx]      = useState("");   // entry price for a Limit order
+  const [stopLossPx,   setStopLossPx]   = useState("");   // protective exit, set independently
   const [confirm,      setConfirm]      = useState(false);
   const [placeErr,     setPlaceErr]     = useState("");
   const [placingOrder, setPlacingOrder] = useState(false);
@@ -204,8 +206,8 @@ export function UserStockDetail() {
 
     const quantity = parseFloat(qty);
     if (isNaN(quantity) || quantity <= 0) { setPlaceErr("Enter a valid quantity."); return; }
-    if (orderType !== "market" && (!limitPx || isNaN(parseFloat(limitPx)))) {
-      setPlaceErr("Enter a valid limit/stop price."); return;
+    if (orderType === "limit" && (!limitPx || isNaN(parseFloat(limitPx)))) {
+      setPlaceErr("Enter a valid limit price."); return;
     }
 
     // ── Wallet-based order placement (ALL orders) ─────────────────────────
@@ -237,6 +239,8 @@ export function UserStockDetail() {
       );
       return;
     }
+    // A stop on the wrong side of the entry would fire the moment it is armed.
+    if (slError) { setPlaceErr(slError); return; }
 
     setPlacingOrder(true);
     try {
@@ -249,9 +253,15 @@ export function UserStockDetail() {
         quantity:       quantity,
         order_duration: "DAY",
       };
-      // limit → limit_price; stop → stop_price
+      // Entry level.
       if (orderType === "limit" && limitPx) body.limit_price = parseFloat(limitPx);
-      if (orderType === "stop"  && limitPx) body.stop_price  = parseFloat(limitPx);
+      // Protective exit, sent alongside the entry rather than instead of it —
+      // the engine arms it as its own STOP order once this order fills. Limit
+      // orders only, matching where the field is offered.
+      if (tradeMode === "intraday" && orderType === "limit"
+          && stopLossPx && !isNaN(parseFloat(stopLossPx))) {
+        body.stop_loss_price = parseFloat(stopLossPx);
+      }
 
       const res = await fetch(`${API_BASE}/trade_orders/place`, {
         method: "POST",
@@ -266,7 +276,9 @@ export function UserStockDetail() {
         setConfirm(false); setPlaced(true);
         setTimeout(() => setPlaced(false), 4000);
         await Promise.all([fetchUserHoldings(stock), fetchWallet()]);
-        setQty("0"); setLimitPx(""); setPlaceErr("");
+        // Back to an empty ticket, not "0" — the user should be able to type the
+        // next quantity straight in.
+        setQty(""); setLimitPx(""); setStopLossPx(""); setPlaceErr("");
       } else {
         const msg = data.response?.message || "Failed to place order.";
         // Insufficient wallet funds → point the user at Add Money.
@@ -339,6 +351,24 @@ export function UserStockDetail() {
 
   const execPx = orderType==="market" ? marketPx : (parseFloat(limitPx)||marketPx);
   const total  = (parseFloat(qty)||'')*execPx;
+
+  // ── Stop loss ─────────────────────────────────────────────────────────────
+  // Checked against the ENTRY price, not the market price: on a limit order the
+  // user gets in at their limit, so that is what the stop has to sit under.
+  const slValue = parseFloat(stopLossPx);
+  const slError = !stopLossPx || isNaN(slValue) ? ""
+    : slValue <= 0 ? "Enter a valid stop loss."
+    : tradeType === "buy" && slValue >= execPx
+      ? `Must be below your buy price of ₹${execPx.toFixed(2)} — it would trigger immediately.`
+    : tradeType === "sell" && isShortSell && slValue <= execPx
+      ? `Must be above your sell price of ₹${execPx.toFixed(2)} — it would trigger immediately.`
+    : "";
+  // What the stop caps the loss at, if it fills exactly there.
+  const slRisk = Math.abs(execPx - (slValue || execPx)) * (parseFloat(qty) || 0);
+  // A sensible default one click away — 1% the protective side of the entry.
+  const slSuggestion = execPx > 0
+    ? (tradeType === "buy" ? execPx * 0.99 : execPx * 1.01).toFixed(2)
+    : null;
 
   // ── Early returns ─────────────────────────────────────────────────────────
   if (loading) return (
@@ -445,10 +475,13 @@ export function UserStockDetail() {
                     </div>
                   ))}
                 </div>
-                {isShortPos && (
-                  <div className="mt-2 text-[11px] text-amber-300/80">
-                    Buy {parseFloat(myHolding.quantity||0).toFixed(2)} share(s) to square off.
-                    Any short still open at market close is bought back automatically.
+                {(myHolding.trade_mode === "INTRADAY") && (
+                  <div className={`mt-2 text-[11px] ${isShortPos ? "text-amber-300/80" : "text-cyan-300/80"}`}>
+                    {isShortPos
+                      ? `Buy ${parseFloat(myHolding.quantity||0).toFixed(2)} share(s) to square off. `
+                      : `Sell ${parseFloat(myHolding.quantity||0).toFixed(2)} share(s) to square off. `}
+                    Squared off automatically at {marketStatus?.market_close_label || "market close"} IST
+                    if still open.
                   </div>
                 )}
               </div>
@@ -532,8 +565,8 @@ export function UserStockDetail() {
                     <button key={m.key}
                       onClick={()=>{
                         setTradeMode(m.key);
-                        // Delivery is Market-only — reset any Limit/Stop selection.
-                        if(m.key==="delivery"){ setOT("market"); setLimitPx(""); }
+                        // Delivery is Market-only and carries no stop loss.
+                        if(m.key==="delivery"){ setOT("market"); setLimitPx(""); setStopLossPx(""); }
                         setPlaceErr("");
                       }}
                       className={`flex-1 py-2 rounded-xl border transition-all ${tradeMode===m.key?"border-cyan-500/50 bg-cyan-500/10 text-cyan-400":"border-white/8 bg-[#141C30] text-gray-500"}`}>
@@ -544,41 +577,98 @@ export function UserStockDetail() {
                 </div>
               </div>
 
-              {/* Order type — Delivery = Market only; Intraday adds Limit / Stop */}
+              {/* Order type — Delivery = Market only; Intraday adds Limit.
+                  There is no standalone "Stop" entry type: a stop is protection
+                  for a position, not a way into one, so it lives as the Stop Loss
+                  field under Limit rather than as a third button here. */}
               <div>
                 <label className="text-xs text-gray-500 mb-2 block">Order Type</label>
                 <div className="flex gap-2">
-                  {(tradeMode==="intraday" ? ["market","limit","stop"] : ["market"]).map(ot=>(
-                    <button key={ot} onClick={()=>{setOT(ot);setLimitPx("");}}
+                  {(tradeMode==="intraday" ? ["market","limit"] : ["market"]).map(ot=>(
+                    <button key={ot}
+                      onClick={()=>{
+                        setOT(ot);
+                        setLimitPx("");
+                        // The stop loss belongs to a Limit order; leaving a value
+                        // behind on Market would submit one the user can't see.
+                        if(ot!=="limit") setStopLossPx("");
+                        setPlaceErr("");
+                      }}
                       className={`flex-1 py-2 text-xs rounded-xl capitalize border transition-all ${orderType===ot?"border-cyan-500/50 bg-cyan-500/10 text-cyan-400":"border-white/8 bg-[#141C30] text-gray-500"}`}>
                       {ot}
                     </button>
                   ))}
                 </div>
-                {tradeMode==="delivery" && (
+                {tradeMode==="delivery" ? (
                   <div className="text-[10px] text-gray-600 mt-1.5">
-                    Delivery supports Market orders only. Switch to Intraday for Limit / Stop-loss.
+                    Delivery supports Market orders only. Switch to Intraday for Limit orders.
+                  </div>
+                ) : (
+                  <div className="text-[10px] text-gray-600 mt-1.5">
+                    Intraday settles the same session — any position still open at{" "}
+                    {marketStatus?.market_close_label || "market close"} IST is squared off
+                    automatically at the last traded price.
                   </div>
                 )}
               </div>
 
-              {/* Quantity */}
+              {/* Quantity — text + digit filter, NOT type="number". A number
+                  input still accepts "e", "+" and "-", and it renders the
+                  browser's spinner arrows, which have no place on a trade
+                  ticket. */}
               <div>
                 <label className="text-xs text-gray-500 mb-2 block">Quantity</label>
-                <input type="number" value={qty} onChange={e=>setQty(e.target.value)}
-                  className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30"/>
+                <input type="text" inputMode="numeric" value={qty}
+                  onChange={e=>setQty(filterQuantity(e.target.value))}
+                  placeholder="Enter Quantity"
+                  aria-label="Quantity in shares"
+                  className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/30"/>
               </div>
 
-              {/* Limit price */}
-              {orderType!=="market"&&(
+              {/* Entry price — the level this order goes IN at */}
+              {orderType==="limit"&&(
                 <div>
-                  <label className="text-xs text-gray-500 mb-2 block">{orderType==="limit"?"Limit":"Stop"} Price</label>
+                  <label className="text-xs text-gray-500 mb-2 block">Limit Price</label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">₹</span>
-                    <input type="number" value={limitPx} onChange={e=>setLimitPx(e.target.value)}
+                    <input type="text" inputMode="decimal" value={limitPx}
+                      onChange={e=>setLimitPx(filterDecimal(e.target.value, 2))}
                       placeholder={marketPx.toFixed(2)}
-                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30"/>
+                      aria-label="Limit price in rupees"
+                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/30"/>
                   </div>
+                </div>
+              )}
+
+              {/* Stop loss — the level this order gets OUT at. Offered only on a
+                  Limit order: it pairs with the entry price directly above it, so
+                  the two read together as "get in here, get out there". A Market
+                  order fills instantly at whatever the market is, which leaves no
+                  entry price for a stop to be measured against. */}
+              {tradeMode==="intraday"&&orderType==="limit"&&(
+                <div>
+                  <label className="text-xs text-gray-500 mb-2 flex items-center justify-between">
+                    <span>Stop Loss <span className="text-gray-600">(optional)</span></span>
+                    {slSuggestion && (
+                      <button type="button" onClick={()=>setStopLossPx(slSuggestion)}
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300">
+                        −1% · ₹{slSuggestion}
+                      </button>
+                    )}
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">₹</span>
+                    <input type="text" inputMode="decimal" value={stopLossPx}
+                      onChange={e=>setStopLossPx(filterDecimal(e.target.value, 2))}
+                      placeholder={tradeType==="buy" ? "Sell if price falls to…" : "Cover if price rises to…"}
+                      aria-label="Stop loss price in rupees"
+                      className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/30"/>
+                  </div>
+                  {stopLossPx && (
+                    <div className={`text-[10px] mt-1.5 ${slError ? "text-red-400" : "text-gray-600"}`}>
+                      {slError || `Armed once this order fills · protects ~₹${slRisk.toFixed(2)} of risk`}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -627,7 +717,7 @@ export function UserStockDetail() {
                   Paid from wallet balance · deducted instantly
                 </div>
               )}
-              {tradeType==="buy"&&!isCoveringBuy&&orderType!=="market"&&(
+              {tradeType==="buy"&&!isCoveringBuy&&orderType==="limit"&&(
                 <div className="px-3 py-2 bg-amber-500/8 border border-amber-500/20 rounded-xl text-xs text-amber-400 text-center">
                   Reserves wallet buying power · fills automatically when triggered
                 </div>
@@ -696,6 +786,11 @@ export function UserStockDetail() {
                   ["Order Type", orderType.toUpperCase()],
                   ["Quantity",   `${qty} shares`],
                   ["Price",      `₹${execPx.toFixed(2)}`],
+                  // Only shown when one is attached, so the confirm step stays
+                  // short for a plain order.
+                  ...(stopLossPx && tradeMode==="intraday" && orderType==="limit"
+                    ? [["Stop Loss", `₹${parseFloat(stopLossPx).toFixed(2)}  ·  risk ≈ ₹${slRisk.toFixed(2)}`]]
+                    : []),
                   ["Est. Total", `₹${total.toLocaleString("en",{maximumFractionDigits:2})}`],
                 ].map(([l,v])=>(
                   <div key={l} className="flex justify-between text-sm">
@@ -716,7 +811,7 @@ export function UserStockDetail() {
                   ₹{total.toLocaleString("en",{maximumFractionDigits:2})} will be deducted from your wallet balance.
                 </div>
               )}
-              {tradeType==="buy"&&orderType!=="market"&&(
+              {tradeType==="buy"&&orderType==="limit"&&(
                 <div className="mb-4 p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 text-xs text-amber-400 text-center">
                   This {orderType.toUpperCase()} order reserves wallet funds and fills automatically when the price is reached.
                 </div>

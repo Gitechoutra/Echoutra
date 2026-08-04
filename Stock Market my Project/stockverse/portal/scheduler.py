@@ -123,15 +123,17 @@ def _monitor_orders():
     # 2) Match + execute against the latest prices.
     process_pending_orders()
 
-    # 3) Once the bell has rung, buy back any intraday short still open. Runs on
-    #    every tick and is a no-op while the market is open or when nothing is
-    #    short, so it needs no "have we done this today?" bookkeeping.
+    # 3) Once the bell has rung, close every intraday position still open —
+    #    longs sold, shorts bought back, at the last traded price. Runs on every
+    #    tick and is a no-op while the market is open or when nothing is left
+    #    open, so it needs no "have we done this today?" bookkeeping and no
+    #    separate cron. This is the automatic settlement at market close.
     try:
-        from portal.helpers.order_engine import square_off_open_shorts
-        square_off_open_shorts()
+        from portal.helpers.order_engine import square_off_intraday_positions
+        square_off_intraday_positions()
     except Exception as e:
         db.session.rollback()
-        logger.error(f'[scheduler] intraday short square-off failed: {e}', exc_info=True)
+        logger.error(f'[scheduler] intraday square-off failed: {e}', exc_info=True)
 
     # 4) Fire any user price alerts the new prices have triggered.
     try:

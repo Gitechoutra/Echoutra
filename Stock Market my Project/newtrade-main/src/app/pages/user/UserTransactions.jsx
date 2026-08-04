@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -11,6 +11,8 @@ import {
   BarChart, Bar, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
   AreaChart, Area,
 } from "recharts";
+import { useLiveQuotes } from "../../context/LiveQuotesContext";
+import { StockLogo } from "../../components/StockLogo";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -36,11 +38,184 @@ const STATUS_CONFIG = {
   REVERSED:  { color: "text-gray-400",    Icon: XCircle     },
 };
 
-const FILTERS = ["All", "BUY", "SELL", "DIVIDEND", "DEPOSIT", "WITHDRAWAL"];
+/* "Pending" is not a transaction type — it is a different source entirely.
+   A transaction row only exists once an order has FILLED, so anything still
+   waiting for its trigger lives in trade_orders and has to be fetched from
+   there. Selecting it swaps the table for the open-orders view below. */
+const PENDING = "PENDING";
+const FILTERS = ["All", PENDING, "BUY", "SELL", "DIVIDEND", "DEPOSIT", "WITHDRAWAL"];
+
+/* Order statuses that are still live and therefore cancellable. */
+const OPEN_ORDER_STATUSES = ["PENDING", "OPEN", "PARTIALLY_FILLED"];
+
+/* The price an order is waiting on. A LIMIT waits at limit_price, a STOP at
+   stop_price; a STOP_LIMIT needs the stop to trigger first. */
+const triggerOf = (o) =>
+  o.order_type === "LIMIT" ? o.limit_price
+  : o.order_type === "STOP" ? o.stop_price
+  : o.stop_price ?? o.limit_price;
+
+/* Reshape a pending ORDER into the row shape the history table renders, so both
+   can share one table under All Types. `__pending` marks the ones that are still
+   instructions rather than completed trades — they get a Cancel action and no
+   detail modal, because there is no transaction to open yet. */
+const asHistoryRow = (o) => ({
+  __pending:      true,
+  order_id:       o.order_id,
+  txn_id:         `pending-${o.order_id}`,
+  transacted_at:  o.submitted_at,
+  txn_type:       o.order_side,
+  ticker_symbol:  o.ticker_symbol,
+  company_name:   o.company_name,
+  quantity:       o.quantity,
+  price_per_unit: triggerOf(o),
+  gross_amount:   o.estimated_amount,
+  net_amount:     null,
+  txn_status:     o.order_status,
+  order_type:     o.order_type,
+  is_auto_stop_loss: o.is_auto_stop_loss,
+});
+
+/* ── Pending orders table ────────────────────────────────────────────────────
+   Orders that have been accepted but not executed: intraday LIMIT and STOP
+   orders waiting for their trigger price, and the stop-losses the engine armed
+   automatically when an entry filled. Each can be withdrawn from here, which
+   also releases whatever buying power or short margin it had reserved.
+──────────────────────────────────────────────────────────────────────────── */
+function PendingOrders({ orders, loading, cancellingId, error, onCancel, onBrowse }) {
+  if (loading && orders.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <div className="w-8 h-8 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (orders.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 gap-3">
+        <Clock className="w-12 h-12 text-gray-700" />
+        <div className="text-gray-500 text-sm">No pending orders</div>
+        <div className="text-gray-700 text-xs text-center max-w-sm">
+          Intraday Limit and Stop orders wait here until the market reaches their
+          trigger price. Market orders fill immediately, so they never appear.
+        </div>
+        <button onClick={onBrowse}
+          className="px-4 py-2 bg-[#141C30] border border-white/8 rounded-xl text-xs text-gray-400 hover:text-white transition-colors">
+          Browse Markets
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {error && (
+        <div className="flex items-center gap-2 mx-5 mt-4 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">
+          <AlertCircle className="w-4 h-4 flex-shrink-0" />{error}
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-white/5">
+              {["Placed", "Order", "Symbol", "Qty", "Trigger", "Est. Amount", "Status", ""].map(h => (
+                <th key={h} className="px-5 py-3 text-left text-xs text-gray-600 font-medium whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map((o, i) => {
+              const buy      = o.order_side === "BUY";
+              const trigger  = triggerOf(o);
+              const busy     = cancellingId === o.order_id;
+              const autoStop = o.is_auto_stop_loss;
+
+              return (
+                <motion.tr key={o.order_id}
+                  initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.03 }}
+                  className="border-b border-white/5 hover:bg-white/5 transition-colors">
+                  <td className="px-5 py-3.5 whitespace-nowrap">
+                    <div className="text-xs text-gray-400">{(o.submitted_at || "").slice(0, 10)}</div>
+                    <div className="text-xs text-gray-600">{(o.submitted_at || "").slice(11, 16)}</div>
+                  </td>
+
+                  <td className="px-5 py-3.5">
+                    <div className="flex flex-col gap-1">
+                      <span className={`inline-flex w-fit items-center gap-1 text-xs px-2 py-1 rounded-full border ${
+                        buy ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400"
+                            : "bg-red-500/10 border-red-500/20 text-red-400"}`}>
+                        {buy ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                        {o.order_side} · {o.order_type}
+                      </span>
+                      {autoStop && (
+                        <span className="text-[10px] text-amber-400/90" title="Placed automatically when your entry order filled">
+                          auto stop-loss
+                        </span>
+                      )}
+                    </div>
+                  </td>
+
+                  <td className="px-5 py-3.5">
+                    <div className="flex items-center gap-2.5">
+                      <StockLogo symbol={o.ticker_symbol} name={o.company_name} size="xs" />
+                      <div>
+                        <div className="text-sm font-bold text-white">{o.ticker_symbol || "—"}</div>
+                        <div className="text-xs text-gray-600">{o.trade_mode || "DELIVERY"}</div>
+                      </div>
+                    </div>
+                  </td>
+
+                  <td className="px-5 py-3.5 text-sm text-gray-400">
+                    {parseFloat(o.quantity || 0).toFixed(2)}
+                  </td>
+
+                  <td className="px-5 py-3.5 text-sm text-white whitespace-nowrap">
+                    {trigger ? `₹${parseFloat(trigger).toFixed(2)}` : "—"}
+                  </td>
+
+                  <td className="px-5 py-3.5 text-sm text-gray-400 whitespace-nowrap">
+                    {o.estimated_amount
+                      ? `₹${parseFloat(o.estimated_amount).toLocaleString("en-IN", { maximumFractionDigits: 2 })}`
+                      : "—"}
+                  </td>
+
+                  <td className="px-5 py-3.5">
+                    <div className="flex items-center gap-1.5 text-xs text-amber-400">
+                      <Clock className="w-3.5 h-3.5" />
+                      {o.order_status}
+                    </div>
+                  </td>
+
+                  <td className="px-5 py-3.5 text-right">
+                    <button
+                      onClick={() => onCancel(o.order_id)}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/15 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                      <X className="w-3 h-3" />
+                      {busy ? "Cancelling…" : "Cancel"}
+                    </button>
+                  </td>
+                </motion.tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div className="px-5 py-3 border-t border-white/5 text-[11px] text-gray-600">
+        Cancelling releases any buying power or short margin the order was holding.
+        Anything still pending when the market closes is cancelled automatically.
+      </div>
+    </>
+  );
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════ */
 export function UserTransactions() {
   const navigate = useNavigate();
+  // Used only as a tick: every new quote batch is a moment a pending order
+  // might have triggered.
+  const { updatedAt: quotesUpdatedAt } = useLiveQuotes();
 
   /* ── Data state ────────────────────────────────────────────────────────── */
   const [transactions, setTransactions] = useState([]);
@@ -60,12 +235,70 @@ export function UserTransactions() {
   const [perPage]                     = useState(20);
   const [showFilters, setShowFilters] = useState(false);
 
+  /* ── Pending orders (a separate source — see the PENDING note above) ───── */
+  const [pending,        setPending]        = useState([]);
+  const [pendingLoading, setPendingLoading] = useState(false);
+  const [cancellingId,   setCancellingId]   = useState(null);
+  const [cancelError,    setCancelError]    = useState("");
+  const showPending = typeFilter === PENDING;
+
   /* ── Detail modal ──────────────────────────────────────────────────────── */
   const [selected,    setSelected]    = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
   /* ── Monthly chart data (derived from transactions) ────────────────────── */
   const [monthlyChart, setMonthlyChart] = useState([]);
+
+  /* ── Fetch pending orders ──────────────────────────────────────────────────
+     Straight from /trade_orders/my, because a queued order has no transaction
+     row yet — that is only written when it fills. Statuses are filtered here
+     rather than server-side so PENDING, OPEN and PARTIALLY_FILLED all arrive in
+     one request instead of three.
+  ──────────────────────────────────────────────────────────────────────────── */
+  const fetchPending = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setPendingLoading(true);
+    try {
+      const res  = await fetch(`${API_BASE}/trade_orders/my?per_page=100`, { headers: authHdr() });
+      const data = await res.json();
+      if (data.bool) {
+        const open = (data.response?.orders || []).filter(
+          o => OPEN_ORDER_STATUSES.includes((o.order_status || "").toUpperCase())
+        );
+        setPending(open);
+        return open.length;
+      }
+    } catch {
+      /* keep the last known list rather than blanking the table */
+    } finally {
+      if (!silent) setPendingLoading(false);
+    }
+    return null;
+  }, []);
+
+  /* Cancel one pending order. Always permitted, market open or shut — a user
+     must be able to withdraw an instruction they have not had executed yet. */
+  const cancelOrder = async (orderId) => {
+    setCancellingId(orderId);
+    setCancelError("");
+    try {
+      const res  = await fetch(`${API_BASE}/trade_orders/${orderId}/cancel`, {
+        method: "POST", headers: authHdr(), body: JSON.stringify({ reason: "Cancelled by user" }),
+      });
+      const data = await res.json();
+      if (data.bool) {
+        // Drop it immediately so the row can't be clicked twice, then reconcile
+        // with the server — which also releases any reserved funds.
+        setPending(prev => prev.filter(o => o.order_id !== orderId));
+        await Promise.allSettled([fetchPending({ silent: true }), fetchWallet()]);
+      } else {
+        setCancelError(data.response?.message || "Could not cancel that order.");
+      }
+    } catch {
+      setCancelError("Network error while cancelling. Please try again.");
+    } finally {
+      setCancellingId(null);
+    }
+  };
 
   /* ── Fetch wallet ──────────────────────────────────────────────────────── */
   const fetchWallet = useCallback(async () => {
@@ -192,12 +425,37 @@ export function UserTransactions() {
   useEffect(() => {
     fetchWallet();
     fetchSummary();
-  }, []);
+    fetchPending();
+  }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     setPage(1);
-    fetchTransactions(1);
-  }, [typeFilter, fromDate, toDate]);
+    if (showPending) fetchPending();
+    else fetchTransactions(1);
+  }, [typeFilter, fromDate, toDate]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Pending orders fill on price, so the list is re-read each time a fresh quote
+     batch lands rather than on a timer of its own. Runs for both views that show
+     them — the Pending tab and All Types — and not for the Buy/Sell/Deposit
+     filters, which show settled history only.
+     If an order disappeared it either filled or expired, so the completed
+     history is pulled again to bring in the row it became. */
+  useEffect(() => {
+    if (!quotesUpdatedAt) return;
+    if (!showPending && typeFilter !== "All") return;
+    let cancelled = false;
+    (async () => {
+      const before = pendingCountRef.current;
+      const after  = await fetchPending({ silent: true });
+      if (cancelled || after == null) return;
+      if (after < before && !showPending) fetchTransactions(page);
+    })();
+    return () => { cancelled = true; };
+  }, [showPending, typeFilter, quotesUpdatedAt]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Read by the effect above without making it re-run on every list change. */
+  const pendingCountRef = useRef(pending.length);
+  useEffect(() => { pendingCountRef.current = pending.length; }, [pending]);
 
   /* ── Helpers ───────────────────────────────────────────────────────────── */
   const handlePageChange = (newPage) => {
@@ -224,12 +482,21 @@ export function UserTransactions() {
   };
 
   /* Client-side search filter */
+  /* Under All Types the two sources are shown together, pending first: an order
+     still waiting to execute is the row a user is most likely to want to act on,
+     and burying it below settled history would hide the very thing they can
+     still change. The Buy/Sell/Deposit filters are left alone — those are
+     server-side filters over completed transactions. */
+  const baseRows = typeFilter === "All"
+    ? [...pending.map(asHistoryRow), ...transactions]
+    : transactions;
+
   const displayed = search
-    ? transactions.filter(t =>
+    ? baseRows.filter(t =>
         (t.ticker_symbol || "").toLowerCase().includes(search.toLowerCase()) ||
         (t.transaction_type || t.txn_type || "").toLowerCase().includes(search.toLowerCase())
       )
-    : transactions;
+    : baseRows;
 
   /* ── Summary cards data ─────────────────────────────────────────────────── */
   const summaryCards = [
@@ -276,7 +543,9 @@ export function UserTransactions() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => fetchTransactions(page)}
+          {/* Refreshes whichever table is on screen — the two read different
+              endpoints, so this has to follow the active tab. */}
+          <button onClick={() => (showPending ? fetchPending() : fetchTransactions(page))}
             className="p-2 rounded-xl bg-[#0C1220] border border-white/8 text-gray-400 hover:text-white transition-colors">
             <RefreshCw className="w-4 h-4" />
           </button>
@@ -341,16 +610,31 @@ export function UserTransactions() {
       <div className="space-y-3">
         {/* Type filter pills */}
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
-          {FILTERS.map(f => (
-            <button key={f} onClick={() => setTypeFilter(f)}
-              className={`px-3 py-1.5 text-xs rounded-xl whitespace-nowrap border transition-all ${
-                typeFilter === f
-                  ? "border-cyan-500/50 bg-cyan-500/10 text-cyan-400"
-                  : "border-white/8 text-gray-600 hover:text-white"
-              }`}>
-              {f === "All" ? "All Types" : TYPE_CONFIG[f]?.label || f}
-            </button>
-          ))}
+          {FILTERS.map(f => {
+            const isPending = f === PENDING;
+            const active    = typeFilter === f;
+            return (
+              <button key={f} onClick={() => setTypeFilter(f)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl whitespace-nowrap border transition-all ${
+                  active
+                    ? isPending
+                      ? "border-amber-500/50 bg-amber-500/10 text-amber-400"
+                      : "border-cyan-500/50 bg-cyan-500/10 text-cyan-400"
+                    : "border-white/8 text-gray-600 hover:text-white"
+                }`}>
+                {isPending && <Clock className="w-3 h-3" />}
+                {f === "All" ? "All Types" : isPending ? "Pending" : TYPE_CONFIG[f]?.label || f}
+                {/* Badge the count so an order waiting to execute is visible
+                    without opening the tab. */}
+                {isPending && pending.length > 0 && (
+                  <span className={`px-1.5 rounded-full text-[10px] ${
+                    active ? "bg-amber-500/20" : "bg-amber-500/15 text-amber-400"}`}>
+                    {pending.length}
+                  </span>
+                )}
+              </button>
+            );
+          })}
 
           <button onClick={() => setShowFilters(!showFilters)}
             className={`ml-auto flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-xl border whitespace-nowrap transition-all ${
@@ -409,19 +693,42 @@ export function UserTransactions() {
       <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
           <div className="text-sm font-medium text-white">
-            Transaction History
-            {total > 0 && (
-              <span className="ml-2 text-xs text-gray-600">({total} total)</span>
-            )}
+            {showPending ? "Pending Orders" : "Transaction History"}
+            {showPending
+              ? <span className="ml-2 text-xs text-gray-600">({pending.length} waiting to execute)</span>
+              : total > 0 && (
+                  <span className="ml-2 text-xs text-gray-600">
+                    ({total} total
+                    {/* Pending rows sit in this table too under All Types, so
+                        say so rather than letting the count look wrong. */}
+                    {typeFilter === "All" && pending.length > 0 &&
+                      <span className="text-amber-400/80"> · {pending.length} pending</span>}
+                    )
+                  </span>
+                )}
           </div>
-          {(fromDate || toDate || typeFilter !== "All") && (
+          {showPending ? (
+            <button onClick={() => fetchPending()}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-white/8 text-gray-500 hover:text-white transition-colors">
+              <RefreshCw className={`w-3 h-3 ${pendingLoading ? "animate-spin" : ""}`} /> Refresh
+            </button>
+          ) : (fromDate || toDate || typeFilter !== "All") && (
             <span className="text-xs text-cyan-400 px-2 py-1 bg-cyan-500/10 border border-cyan-500/20 rounded-lg">
               Filtered
             </span>
           )}
         </div>
 
-        {loading ? (
+        {showPending ? (
+          <PendingOrders
+            orders={pending}
+            loading={pendingLoading}
+            cancellingId={cancellingId}
+            error={cancelError}
+            onCancel={cancelOrder}
+            onBrowse={() => navigate("/user/market")}
+          />
+        ) : loading ? (
           <div className="flex items-center justify-center py-16">
             <div className="w-8 h-8 border-2 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin" />
           </div>
@@ -447,11 +754,18 @@ export function UserTransactions() {
           </div>
         ) : (
           <>
+            {/* Cancelling happens from this table too under All Types, so its
+                failures have to be reportable here. */}
+            {cancelError && (
+              <div className="flex items-center gap-2 mx-5 mt-4 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />{cancelError}
+              </div>
+            )}
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
                   <tr className="border-b border-white/5">
-                    {["Date", "Type", "Symbol", "Quantity", "Price", "Amount", "Net Amount", "Status"].map(h => (
+                    {["Date", "Type", "Symbol", "Quantity", "Price", "Amount", "Net Amount", "Status", ""].map(h => (
                       <th key={h} className="px-5 py-3 text-left text-xs text-gray-600 font-medium">{h}</th>
                     ))}
                   </tr>
@@ -464,29 +778,48 @@ export function UserTransactions() {
                     const cfg     = TYPE_CONFIG[txnType]    || TYPE_CONFIG.BUY;
                     const sCfg    = STATUS_CONFIG[status]   || STATUS_CONFIG.COMPLETED;
                     const up      = txnType === "BUY" || txnType === "DEPOSIT" || txnType === "DIVIDEND";
+                    const isPend  = t.__pending === true;
+                    const busy    = isPend && cancellingId === t.order_id;
 
                     return (
                       <motion.tr key={txnId}
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ delay: i * 0.03 }}
-                        onClick={() => fetchDetail(txnId)}
-                        className="border-b border-white/5 hover:bg-white/5 cursor-pointer transition-colors group">
+                        /* A pending row has no transaction to open yet. */
+                        onClick={() => { if (!isPend) fetchDetail(txnId); }}
+                        className={`border-b border-white/5 transition-colors group ${
+                          isPend
+                            ? "bg-amber-500/[0.03] hover:bg-amber-500/[0.07]"
+                            : "hover:bg-white/5 cursor-pointer"
+                        }`}>
                         <td className="px-5 py-3.5">
                           <div className="text-xs text-gray-400">{fmtDate(t.transacted_at || t.created_at || t.created_on)}</div>
                           <div className="text-xs text-gray-600">{(t.transacted_at || "").slice(11, 16)}</div>
                         </td>
                         <td className="px-5 py-3.5">
-                          <span className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full border ${cfg.bg} ${cfg.color}`}>
-                            <cfg.icon className="w-3 h-3" />
-                            {cfg.label}
-                          </span>
+                          <div className="flex flex-col gap-1">
+                            <span className={`inline-flex w-fit items-center gap-1 text-xs px-2 py-1 rounded-full border ${cfg.bg} ${cfg.color}`}>
+                              <cfg.icon className="w-3 h-3" />
+                              {cfg.label}
+                            </span>
+                            {/* On a pending row the order type is what tells the
+                                user why it hasn't executed yet. */}
+                            {isPend && (
+                              <span className="text-[10px] text-gray-600">
+                                {t.order_type}{t.is_auto_stop_loss ? " · auto stop-loss" : ""}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-5 py-3.5">
                           {t.ticker_symbol ? (
-                            <div>
-                              <div className="text-sm font-bold text-white">{t.ticker_symbol}</div>
-                              <div className="text-xs text-gray-600">{t.company_name || ""}</div>
+                            <div className="flex items-center gap-2.5">
+                              <StockLogo symbol={t.ticker_symbol} name={t.company_name} size="xs" />
+                              <div>
+                                <div className="text-sm font-bold text-white">{t.ticker_symbol}</div>
+                                <div className="text-xs text-gray-600">{t.company_name || ""}</div>
+                              </div>
                             </div>
                           ) : (
                             <span className="text-xs text-gray-600">—</span>
@@ -496,19 +829,38 @@ export function UserTransactions() {
                           {t.quantity ? parseFloat(t.quantity).toFixed(4) : "—"}
                         </td>
                         <td className="px-5 py-3.5 text-sm text-gray-400">
-                          {t.price_per_unit ? `₹${parseFloat(t.price_per_unit).toFixed(2)}` : "—"}
+                          {t.price_per_unit
+                            ? <>₹{parseFloat(t.price_per_unit).toFixed(2)}
+                                {isPend && <span className="block text-[10px] text-gray-600">trigger</span>}
+                              </>
+                            : "—"}
                         </td>
                         <td className="px-5 py-3.5 text-sm text-white">
                           {fmtAmt(t.amount ?? t.gross_amount)}
                         </td>
-                        <td className={`px-5 py-3.5 text-sm font-medium ${up ? "text-emerald-400" : "text-red-400"}`}>
-                          {up ? "+" : "-"}{fmtAmt(t.net_amount || t.amount)}
+                        {/* Nothing has settled on a pending order, so there is no
+                            net amount to show — an amount here would read as money
+                            that has already moved. */}
+                        <td className={`px-5 py-3.5 text-sm font-medium ${
+                          isPend ? "text-gray-600" : up ? "text-emerald-400" : "text-red-400"}`}>
+                          {isPend ? "—" : `${up ? "+" : "-"}${fmtAmt(t.net_amount || t.amount)}`}
                         </td>
                         <td className="px-5 py-3.5">
                           <div className={`flex items-center gap-1.5 text-xs ${sCfg.color}`}>
                             <sCfg.Icon className="w-3.5 h-3.5" />
                             {status}
                           </div>
+                        </td>
+                        <td className="px-5 py-3.5 text-right">
+                          {isPend && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); cancelOrder(t.order_id); }}
+                              disabled={busy}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs rounded-lg border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/15 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                              <X className="w-3 h-3" />
+                              {busy ? "Cancelling…" : "Cancel"}
+                            </button>
+                          )}
                         </td>
                       </motion.tr>
                     );

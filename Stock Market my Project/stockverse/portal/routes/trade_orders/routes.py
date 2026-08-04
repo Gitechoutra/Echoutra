@@ -41,6 +41,9 @@ place_parser.add_argument('order_type',    type=str,   required=True,  location=
 place_parser.add_argument('quantity',      type=float, required=True,  location='json')
 place_parser.add_argument('limit_price',   type=float, required=False, location='json')
 place_parser.add_argument('stop_price',    type=float, required=False, location='json')
+# Protective exit attached to this order — independent of stop_price, which is an
+# entry trigger. Can be combined with a limit price on the same order.
+place_parser.add_argument('stop_loss_price', type=float, required=False, location='json')
 place_parser.add_argument('order_duration',type=str,   required=False, location='json', default='DAY')
 place_parser.add_argument('trade_mode',    type=str,   required=False, location='json', default='DELIVERY')  # DELIVERY / INTRADAY
 place_parser.add_argument('portfolio_id',  type=int,   required=False, location='json')
@@ -82,6 +85,11 @@ def _order_dict(o: TradeOrders) -> dict:
         'remaining_quantity': float(o.remaining_quantity) if o.remaining_quantity else None,
         'limit_price':      float(o.limit_price)    if o.limit_price    else None,
         'stop_price':       float(o.stop_price)     if o.stop_price     else None,
+        # The protective exit this order carries, and — on the auto-placed stop
+        # itself — the entry order that armed it.
+        'stop_loss_price':  float(o.stop_loss_price) if o.stop_loss_price else None,
+        'parent_order_id':  o.parent_order_id,
+        'is_auto_stop_loss': o.parent_order_id is not None,
         'avg_fill_price':   float(o.avg_fill_price) if o.avg_fill_price else None,
         'estimated_amount': float(o.estimated_amount) if o.estimated_amount else None,
         'filled_amount':    float(o.filled_amount)    if o.filled_amount    else None,
@@ -144,6 +152,8 @@ class PlaceOrder(Resource):
                 v.check('limit_price', validate_price(args['limit_price'], label='Limit price'))
             if args.get('stop_price') is not None:
                 v.check('stop_price', validate_price(args['stop_price'], label='Stop price'))
+            if args.get('stop_loss_price') is not None:
+                v.check('stop_loss_price', validate_price(args['stop_loss_price'], label='Stop loss'))
             if not v.ok:
                 return v.response()
 
@@ -238,6 +248,43 @@ class PlaceOrder(Resource):
                 order_side, portfolio_id, stock_id, trade_mode)
             shorting = is_short(holding)
 
+            # ── Attached stop-loss ────────────────────────────────────────────
+            # Sits alongside limit_price rather than replacing it: a user can ask
+            # to get in at a limit AND be protected once they are in. It becomes a
+            # real STOP order the moment this one fills (see arm_stop_loss).
+            stop_loss = args.get('stop_loss_price')
+            if stop_loss is not None:
+                stop_loss = Decimal(str(stop_loss))
+
+                if trade_mode != TradeMode.INTRADAY:
+                    return jsonify(bool=False, status=400, response={
+                        'message': 'A stop loss can only be attached to an Intraday order.'})
+
+                if position_effect == PositionEffect.CLOSE:
+                    return jsonify(bool=False, status=400, response={
+                        'message': ('This order closes an existing position, so it '
+                                    'cannot carry a stop loss. Attach one when you open.')})
+
+                # A stop on the wrong side of the entry would trigger the instant
+                # it was armed and close the position at once — always a mistake,
+                # so it is refused rather than silently executed.
+                if order_side == OrderSide.BUY and stop_loss >= reserve_price:
+                    return jsonify(bool=False, status=400, response={
+                        'message': (f'Stop loss must be below your buy price of '
+                                    f'{float(reserve_price):.2f} — otherwise it would '
+                                    f'trigger immediately.'),
+                        'entry_price': float(reserve_price),
+                        'stop_loss':   float(stop_loss),
+                    })
+                if order_side == OrderSide.SELL and stop_loss <= reserve_price:
+                    return jsonify(bool=False, status=400, response={
+                        'message': (f'For a short, the stop loss must be above your sell '
+                                    f'price of {float(reserve_price):.2f} — otherwise it '
+                                    f'would trigger immediately.'),
+                        'entry_price': float(reserve_price),
+                        'stop_loss':   float(stop_loss),
+                    })
+
             if order_side == OrderSide.BUY:
                 if shorting:
                     # Buying against an open short covers it. Flipping straight
@@ -306,6 +353,7 @@ class PlaceOrder(Resource):
             order.remaining_quantity= quantity
             order.limit_price       = args.get('limit_price')
             order.stop_price        = args.get('stop_price')
+            order.stop_loss_price   = stop_loss
             order.estimated_amount  = estimated_total
             order.submitted_at      = datetime.now(timezone.utc)
             order.order_source      = 'WEB'

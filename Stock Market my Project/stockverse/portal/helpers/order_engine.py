@@ -13,6 +13,8 @@ Public API
 * execute_order(order, fill_price, ...)       : fill an order and update every ledger
 * process_pending_orders()      -> dict       : scan + fill all triggered pending orders
                                                  (called by the scheduler every ~10s)
+* square_off_intraday_positions() -> dict     : settle every open intraday position
+                                                 once the market has closed
 
 Trigger semantics
 -----------------
@@ -44,9 +46,9 @@ that can still move against them.
     cover (BUY)  : locked  -= quantity × avg_entry_price
                    balance += (avg_entry_price − buy_price) × quantity − commission
 
-Anything still short when the bell rings is bought back automatically at the last
-traded price — see `square_off_open_shorts()`. An intraday short cannot be left
-open overnight: the market is shut, so the user could not close it themselves.
+Anything still short when the bell rings is bought back automatically — see
+`square_off_intraday_positions()`, which settles every open intraday position at
+the close, long and short alike.
 
 Trading window
 --------------
@@ -314,6 +316,13 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
         else:
             action = 'OPEN_LONG'
 
+    # An order placed to CLOSE a position must never end up opening one. This is
+    # the case that matters: a stop-loss left armed after the user has already
+    # sold out by hand would, on trigger, sail through the SELL branch above and
+    # open a brand-new short.
+    if order.position_effect == PositionEffect.CLOSE and action.startswith('OPEN'):
+        return _reject('Position already closed — this exit order is no longer needed.')
+
     # The cash this fill moves. `net_amount` keeps its historical meaning for a
     # long buy (the amount paid, a positive number); for everything else it is
     # the signed effect on the wallet.
@@ -461,9 +470,68 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
             logger.error(f'[order_engine] snapshot after fill failed for '
                          f'portfolio {portfolio.portfolio_id}: {e}')
 
+    # ── Arm the attached stop-loss ────────────────────────────────────────────
+    # Only after the entry has actually filled — there is nothing to protect
+    # until then. Never let a failure here roll back a completed fill; the
+    # position is real either way and the user needs to know it is unprotected.
+    if action in ('OPEN_LONG', 'OPEN_SHORT') and order.stop_loss_price:
+        try:
+            arm_stop_loss(order, quantity, action)
+        except Exception:
+            db.session.rollback()
+            logger.exception(f'[order_engine] could not arm stop-loss for order {order.order_id}')
+
     logger.info(f'[order_engine] filled order {order.order_id} '
                 f'[{action}] {quantity} @ {execution_price}')
     return exec_rec
+
+
+def arm_stop_loss(order: TradeOrders, quantity, action):
+    """Place the protective STOP once an entry order has filled.
+
+    The stop-loss the user typed on the entry becomes a real order in its own
+    right — visible in their order history, matched by the same engine, expiring
+    at the close like any other intraday order. Modelling it as an order rather
+    than as a flag on the position means there is exactly one code path that can
+    sell a user's shares.
+
+        long  entry → SELL STOP below the entry  (price falls → sell out)
+        short entry → BUY  STOP above the entry  (price rises → cover)
+
+    Returns the child order, or None when one already exists (idempotent, so a
+    retried fill cannot arm two stops on the same position).
+    """
+    existing = TradeOrders.query.filter(
+        TradeOrders.parent_order_id == order.order_id,
+        TradeOrders.order_status.in_(_OPEN_STATUSES),
+    ).first()
+    if existing:
+        return None
+
+    child                    = TradeOrders()
+    child.user_id            = order.user_id
+    child.stock_id           = order.stock_id
+    child.portfolio_id       = order.portfolio_id
+    child.order_type         = OrderType.STOP
+    # Exit the other way from the entry.
+    child.order_side         = OrderSide.SELL if action == 'OPEN_LONG' else OrderSide.BUY
+    child.trade_mode         = order.trade_mode or TradeMode.DELIVERY
+    child.position_effect    = PositionEffect.CLOSE
+    child.order_status       = OrderStatus.PENDING
+    child.order_duration     = order.order_duration or OrderDuration.DAY
+    child.quantity           = _d(quantity)
+    child.filled_quantity    = Decimal('0')
+    child.remaining_quantity = _d(quantity)
+    child.stop_price         = _d(order.stop_loss_price)
+    child.estimated_amount   = _d(quantity) * _d(order.stop_loss_price)
+    child.parent_order_id    = order.order_id
+    child.submitted_at       = datetime.now(timezone.utc)
+    child.order_source       = 'SYSTEM'
+    child.save()
+
+    logger.info(f'[order_engine] armed stop-loss order {child.order_id} '
+                f'@ {child.stop_price} for entry {order.order_id}')
+    return child
 
 
 _ACTION_LABELS = {
@@ -565,55 +633,68 @@ def _release_hold_on_close(order: TradeOrders):
         wallet.update()
 
 
-def square_off_open_shorts() -> dict:
-    """Buy back every intraday short still open once the market has closed.
+def square_off_intraday_positions() -> dict:
+    """Close EVERY intraday position still open once the market has shut.
 
-    A short is an obligation to return shares. Leaving one open overnight would
-    trap the user: the market is shut, so they cannot cover it themselves, their
-    collateral stays locked, and they carry the opening gap. This is what a real
-    broker does with open MIS positions at the bell.
+    Intraday means "settled the same session". Once the bell has rung the user
+    cannot close a position themselves — the order gate refuses trades outside
+    hours — so anything left open would sit there overnight carrying the opening
+    gap, and a short's collateral would stay locked with it. This is what a real
+    broker does with open MIS positions at the close.
 
-    Long intraday positions are deliberately NOT touched — the user owns those
-    outright and can sell them whenever they choose.
+        LONG  → SELL at the last traded price
+        SHORT → BUY  at the last traded price
 
-    Idempotent: once covered a position is `is_active=False`, so repeated ticks
-    after the close find nothing to do. Safe to call every tick.
+    Each leg is routed through a real MARKET order and `execute_order`, so it
+    lands in the order history, the executions table, the wallet, the master
+    transactions ledger and the portfolio roll-up exactly like a manual trade.
+    That is what books the final realized P&L and marks the position closed —
+    there is no separate settlement path that could disagree with a hand-placed
+    order.
+
+    DELIVERY holdings are untouched: they are owned outright with no same-day
+    obligation, and the user sells them whenever they choose.
+
+    Idempotent: a squared-off position is `is_active=False`, so later ticks find
+    nothing to do. Safe to call on every scheduler tick.
     """
     from portal.helpers.notify import notify_user
     from portal.models.notifications import NotificationType, NotificationPriority
 
+    empty = {'checked': 0, 'squared_off': 0, 'errors': 0}
     if market_calendar.is_market_open():
-        return {'checked': 0, 'covered': 0, 'errors': 0}
+        return empty
 
-    shorts = PortfolioHoldings.query.filter_by(
+    positions = PortfolioHoldings.query.filter_by(
         trade_mode=TradeMode.INTRADAY,
-        position_side=PositionSide.SHORT,
         is_active=True,
     ).all()
-    if not shorts:
-        return {'checked': 0, 'covered': 0, 'errors': 0}
+    if not positions:
+        return empty
 
-    covered = errors = 0
+    squared = errors = 0
     now = datetime.now(timezone.utc)
 
-    for h in shorts:
+    for h in positions:
         try:
             stock = Stocks.query.get(h.stock_id)
             price = _d(stock.current_price) if stock else Decimal('0')
             qty   = _d(h.quantity)
             if price <= 0 or qty <= 0:
-                # No price to cover against; leave it for the next tick rather
-                # than booking a fill at zero.
+                # No price to settle against; leave it for the next tick rather
+                # than booking a fill at zero and inventing a P&L.
                 continue
 
-            # Route the cover through a real order so it lands in the user's
-            # order history and every ledger, exactly like a manual buy-back.
+            short = h.position_side == PositionSide.SHORT
+            # Closing a short means buying it back; closing a long means selling.
+            side  = OrderSide.BUY if short else OrderSide.SELL
+
             order                    = TradeOrders()
             order.user_id            = h.user_id
             order.stock_id           = h.stock_id
             order.portfolio_id       = h.portfolio_id
             order.order_type         = OrderType.MARKET
-            order.order_side         = OrderSide.BUY
+            order.order_side         = side
             order.trade_mode         = TradeMode.INTRADAY
             order.position_effect    = PositionEffect.CLOSE
             order.order_status       = OrderStatus.PENDING
@@ -628,16 +709,21 @@ def square_off_open_shorts() -> dict:
 
             if execute_order(order, price, funds_locked=False) is None:
                 continue
-            covered += 1
+            squared += 1
 
-            pnl = _d(h.realized_pnl)
+            # Read the P&L back off the holding — execute_order has just booked
+            # it, so this is the settled figure, not a re-derivation.
+            pnl    = _d(h.realized_pnl)
+            symbol = stock.ticker_symbol if stock else 'the stock'
+            verb   = 'bought back' if short else 'sold'
             try:
                 notify_user(
                     h.user_id,
                     NotificationType.ORDER_FILLED,
-                    'Short position squared off at market close',
-                    f'Your intraday short of {float(qty):g} {stock.ticker_symbol} was '
-                    f'bought back at Rs {float(price):.2f} when the market closed. '
+                    'Intraday position squared off at market close',
+                    f'Your intraday {"short" if short else "long"} of {float(qty):g} '
+                    f'{symbol} was {verb} at Rs {float(price):.2f} when the market '
+                    f'closed at {market_calendar.CLOSE_LABEL} IST. '
                     f'Realised P&L: Rs {float(pnl):.2f}.',
                     priority=NotificationPriority.HIGH,
                     reference_type='TRADE_ORDER',
@@ -651,10 +737,10 @@ def square_off_open_shorts() -> dict:
             errors += 1
             logger.exception(f'[order_engine] square-off failed for holding {h.holding_id}')
 
-    if covered or errors:
-        logger.info(f'[order_engine] square-off: checked={len(shorts)} '
-                    f'covered={covered} errors={errors}')
-    return {'checked': len(shorts), 'covered': covered, 'errors': errors}
+    if squared or errors:
+        logger.info(f'[order_engine] intraday square-off: checked={len(positions)} '
+                    f'squared_off={squared} errors={errors}')
+    return {'checked': len(positions), 'squared_off': squared, 'errors': errors}
 
 
 def _notify_intraday_expiry(order: TradeOrders):
