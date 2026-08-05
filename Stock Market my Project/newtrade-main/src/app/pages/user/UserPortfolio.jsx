@@ -1050,6 +1050,7 @@ import {
   PieChart, Pie, Cell, BarChart, Bar,
 } from "recharts";
 import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
+import { inr } from "../../utils/currency";
 import { useLiveQuotes, liveHoldings, livePortfolio } from "../../context/LiveQuotesContext";
 import { StockLogo } from "../../components/StockLogo";
 
@@ -1118,10 +1119,20 @@ function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus 
               {ranked.map((h, idx) => {
                 const short    = h.position_side === "SHORT" || h.is_short === true;
                 const closed   = h.is_active === false || h.position_status === "CLOSED";
-                const qty      = parseFloat(h.quantity          || 0);
+                // `quantity` is what is still OPEN, which is 0 once a position
+                // closes — accurate, but it reads as "0 shares" against a trade
+                // that plainly happened. Closed rows show the size traded.
+                const qty      = closed
+                  ? parseFloat(h.quantity_traded ?? h.quantity ?? 0)
+                  : parseFloat(h.quantity || 0);
                 const avgCost  = parseFloat(h.average_buy_price || 0);
                 const currPx   = parseFloat(h.current_price || 0) > 0 ? parseFloat(h.current_price) : avgCost;
-                const mktVal   = parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : qty * currPx;
+                // A closed position holds nothing, so its market value is 0 —
+                // `qty` above is the size that WAS traded and must not be
+                // multiplied back into a live valuation.
+                const mktVal   = closed
+                  ? 0
+                  : (parseFloat(h.current_value || 0) > 0 ? parseFloat(h.current_value) : qty * currPx);
                 const invested = parseFloat(h.total_invested || qty * avgCost);
                 const realized = parseFloat(h.realized_pnl || 0);
 
@@ -1173,9 +1184,9 @@ function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus 
                     <td className="px-5 py-3.5 text-sm text-gray-300">{qty.toFixed(4)}</td>
                     <td className="px-5 py-3.5 text-sm text-gray-300">₹{avgCost.toFixed(2)}</td>
                     <td className="px-5 py-3.5 text-sm text-white">₹{currPx.toFixed(2)}</td>
-                    <td className="px-5 py-3.5 text-sm text-white">₹{mktVal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}</td>
+                    <td className="px-5 py-3.5 text-sm text-white">{inr(mktVal)}</td>
                     <td className={`px-5 py-3.5 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
-                      {up ? "+" : "-"}₹{Math.abs(pnl).toFixed(2)}
+                      {up ? "+" : "-"}{inr(Math.abs(pnl), { symbol: true })}
                     </td>
                     <td className="px-5 py-3.5">
                       <div className={`flex items-center gap-1 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
@@ -1213,7 +1224,7 @@ function HoldingsCard({ title, subtitle, list, totalValue, navigate, showStatus 
 
 export function UserPortfolio() {
   const navigate = useNavigate();
-  const { quotes } = useLiveQuotes();
+  const { quotes, updatedAt: quotesUpdatedAt } = useLiveQuotes();
 
   // *Raw = what the fetch returned; the live-overlaid `holdings` / `portfolio`
   // are derived below so every value on this page moves with the market instead
@@ -1324,17 +1335,22 @@ export function UserPortfolio() {
   }, []);
 
   // ── Main data loader ──────────────────────────────────────────────────────
-  const loadData = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  /* `silent` = background refresh: no spinner, and a transient failure leaves
+     the page as-is rather than replacing live data with an error. */
+  const loadData = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) { setLoading(true); setError(""); }
     try {
       // 1. Get portfolios list
       const listRes  = await fetch(`${API_BASE}/portfolios/my`, { headers: authHdr() });
       const listData = await listRes.json();
       let portfolios = listData.bool ? (listData.response?.portfolios || []) : [];
 
-      // 2. Auto-create for new users
+      // 2. Auto-create for new users — never on a background refresh. Creating
+      //    rows is a side effect that belongs to a deliberate page load; on a
+      //    10-second tick a failure here would retry forever and flip the
+      //    "Setting up your portfolio…" spinner over live data.
       if (portfolios.length === 0) {
+        if (silent) return;
         const newId = await createDefaultPortfolio();
         if (!newId) { setError("Could not create portfolio. Please try again."); setLoading(false); return; }
         const re   = await fetch(`${API_BASE}/portfolios/my`, { headers: authHdr() });
@@ -1389,17 +1405,28 @@ export function UserPortfolio() {
         // 5. Fetch performance chart + monthly returns
         await fetchPerformance(primary.portfolio_id, activeHoldings);
       } else {
-        setError("Failed to load portfolio details.");
+        if (!silent) setError("Failed to load portfolio details.");
       }
     } catch (err) {
       console.error("loadData:", err);
-      setError("Network error. Please try again.");
+      if (!silent) setError("Network error. Please try again.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [createDefaultPortfolio, fetchPerformance]);
 
-  useEffect(() => { loadData(); }, []);
+  useEffect(() => { loadData(); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* Holdings change on TRADES, not on ticks — but trades happen in places this
+     page cannot see: another tab, the Trade screen, a stop-loss firing, the
+     close-of-day square-off. Rather than trying to catch every origin, the
+     holdings are re-read whenever a fresh quote batch lands. That covers all of
+     them, including the ones the server initiates on its own.
+     `silent` keeps the spinner off so the page never flickers. */
+  useEffect(() => {
+    if (!quotesUpdatedAt) return;
+    loadData({ silent: true });
+  }, [quotesUpdatedAt]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Live overlay ──────────────────────────────────────────────────────────
   // Each holding takes the current price from the shared quote poll, and the
@@ -1487,10 +1514,10 @@ export function UserPortfolio() {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
-          { l: "Portfolio Value", v: `₹${totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}`,     sub: `${activePositionCount} position${activePositionCount !== 1 ? "s" : ""}`, up: null },
+          { l: "Portfolio Value", v: inr(totalValue),     sub: `${activePositionCount} position${activePositionCount !== 1 ? "s" : ""}`, up: null },
           { l: "Total P&L",      v: `${totalPnl >= 0 ? "+" : ""}₹${Math.abs(totalPnl).toFixed(2)}`,          sub: `${totalPnlPct >= 0 ? "+" : ""}${totalPnlPct.toFixed(2)}% all time`, up: totalPnl >= 0 },
           { l: "Today's Change", v: `${dayPnl >= 0 ? "+" : ""}₹${Math.abs(dayPnl).toFixed(2)}`,              sub: `${dayPnlPct >= 0 ? "+" : ""}${dayPnlPct.toFixed(2)}% today`,     up: dayPnl >= 0 },
-          { l: "Invested",       v: `₹${totalInvested.toLocaleString("en", { maximumFractionDigits: 2 })}`,   sub: "Total cost basis",                                                up: null },
+          { l: "Invested",       v: inr(totalInvested),   sub: "Total cost basis",                                                up: null },
         ].map((card, i) => (
           <div key={i} className="bg-[#0C1220] border border-white/5 rounded-2xl p-4">
             <div className="text-xs text-gray-500 mb-1">{card.l}</div>
@@ -1509,7 +1536,7 @@ export function UserPortfolio() {
             <div>
               <div className="text-xs text-gray-500">My Portfolio Performance</div>
               <div className="text-2xl font-bold text-white">
-                ₹{totalValue.toLocaleString("en", { maximumFractionDigits: 2 })}
+                {inr(totalValue)}
               </div>
             </div>
             {totalPnlPct !== 0 && (
@@ -1537,7 +1564,7 @@ export function UserPortfolio() {
                   {/* Zoom to the value range — starting at 0 flattens real day-to-day
                       movement into a straight line on a large portfolio. */}
                   <YAxis
-                    tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} width={52}
+                    tick={{ fill: "#4B5563", fontSize: 10 }} tickLine={false} axisLine={false} width={72}
                     domain={valueDomain}
                     tickFormatter={fmtAxisINR}
                   />

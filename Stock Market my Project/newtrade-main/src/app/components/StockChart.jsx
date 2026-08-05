@@ -31,14 +31,31 @@ export const CHART_TYPES = [
 const TFS = ["1D", "1W", "1M", "3M", "6M", "1Y"];
 
 // Per-timeframe: how many bars, the time between bars, and how to label the axis.
+//
+// INVARIANT: points × stepMs must produce a UNIQUE label under `fmt` for every
+// bar. `date` is the category key on the x-axis, so two bars sharing a label are
+// stacked onto one x position by recharts. 1M used to be 90 bars at 8-hour steps
+// against a "M/D" label — three bars a day collapsing onto 31 positions, which
+// is what drew it as a single flat line. A "date" timeframe therefore needs a
+// step of a whole day or more. `timeframeLabels` in the tests pins this.
 const TF_CFG = {
   "1D": { points: 78,  stepMs: 5 * 60e3,          fmt: "time",  vol: 0.006 },
   "1W": { points: 84,  stepMs: 2 * 3600e3,        fmt: "dt",    vol: 0.012 },
-  "1M": { points: 90,  stepMs: 8 * 3600e3,        fmt: "date",  vol: 0.02  },
+  "1M": { points: 30,  stepMs: 24 * 3600e3,       fmt: "date",  vol: 0.02  },
   "3M": { points: 90,  stepMs: 24 * 3600e3,       fmt: "date",  vol: 0.025 },
   "6M": { points: 90,  stepMs: 2 * 24 * 3600e3,   fmt: "date",  vol: 0.03  },
   "1Y": { points: 120, stepMs: 3 * 24 * 3600e3,   fmt: "date",  vol: 0.035 },
 };
+
+/** Every x-axis label a timeframe would generate — exported so a test can assert
+ *  the uniqueness invariant above rather than leaving it to be noticed on screen. */
+export function timeframeLabels(tf, now = Date.now()) {
+  const cfg = TF_CFG[tf] || TF_CFG["1D"];
+  return Array.from({ length: cfg.points },
+    (_, i) => fmtLabel(now - (cfg.points - 1 - i) * cfg.stepMs, cfg.fmt));
+}
+
+export const TIMEFRAMES = TFS;
 
 // ── Where the live price comes from ─────────────────────────────────────────────
 // The chart advances when a real quote arrives from the shared LiveQuotesProvider
@@ -153,7 +170,11 @@ export function applyTick(prev, price, tf) {
 
   return [...prev.slice(0, -1), {
     ...last,
-    t: now, date: fmtLabel(now, cfg.fmt),
+    t: now,
+    // The forming candle's LABEL is left alone. On an intraday chart it is
+    // rewritten above when a new candle rolls; on a daily one, rewriting it
+    // could hand this bar the same label as its neighbour and collapse the two
+    // onto one x position.
     close,
     high: +Math.max(last.high, close).toFixed(2),
     low:  +Math.min(last.low,  close).toFixed(2),
@@ -257,6 +278,53 @@ function xGeom(xAxisMap, data, offset) {
   return { centre, width: Math.max(1.5, Math.min(step * 0.62, 16)) };
 }
 
+// ── Live price marker, pinned to the newest candle ─────────────────────────────
+/**
+ * A pulsing dot at the latest bar with the price beside it.
+ *
+ * Replaces a full-width dashed line: that stretched a rule across the middle of
+ * the plot and dropped its label on top of the candles, which read as clutter
+ * rather than information. Anchoring to the last bar puts the number where the
+ * price actually is, and it moves with the candle as new quotes arrive.
+ */
+export function makeLivePriceMarker(data, price, color, currency) {
+  return function LivePriceMarker(props) {
+    const { xAxisMap, yAxisMap, offset } = props;
+    if (!xAxisMap || !yAxisMap || !data.length || !(price > 0)) return null;
+
+    const yScale = yAxisMap[Object.keys(yAxisMap)[0]].scale;
+    const { centre } = xGeom(xAxisMap, data, offset);
+    const x = centre(data[data.length - 1]);
+    const y = yScale(price);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+
+    const label = `${currency}${Number(price).toFixed(2)}`;
+    const w     = label.length * 6 + 10;
+    const left  = offset?.left || 0;
+    // The newest bar sits at the right edge, so the chip normally goes to its
+    // left; it flips only if there isn't room, which happens when zoomed in far.
+    const flip  = x - w - 10 < left;
+    const chipX = flip ? x + 10 : x - w - 10;
+
+    return (
+      <g style={{ pointerEvents: "none" }}>
+        <circle cx={x} cy={y} r={8} fill={color} opacity={0.18}>
+          <animate attributeName="r" values="6;11;6" dur="2s" repeatCount="indefinite" />
+          <animate attributeName="opacity" values="0.28;0.05;0.28" dur="2s" repeatCount="indefinite" />
+        </circle>
+        <circle cx={x} cy={y} r={3.5} fill={color} stroke="#0B1120" strokeWidth={1} />
+        {/* Solid chip so the price stays legible over the candles behind it. */}
+        <rect x={chipX} y={y - 9} width={w} height={18} rx={4}
+              fill="#0B1120" stroke={color} strokeOpacity={0.5} />
+        <text x={chipX + w / 2} y={y + 4} textAnchor="middle"
+              fill={color} fontSize={10} fontWeight={700}>
+          {label}
+        </text>
+      </g>
+    );
+  };
+}
+
 // ── Candlestick / hollow-candle layer (drawn via <Customized>) ─────────────────
 export function makeCandleLayer(data, hollow) {
   return function CandleLayer(props) {
@@ -328,7 +396,7 @@ export function makeBarLayer(data) {
  * never have to hover a candle to read the numbers they are trading on. Hovering
  * swaps in that candle's values and says so, so the two can't be confused.
  */
-function OhlcLegend({ quote, hovered, currency, previousClose }) {
+function OhlcLegend({ quote, hovered, currency, previousClose, livePrice, dayUp }) {
   const n = (v) => (v === null || v === undefined ? null : Number(v));
 
   const live = {
@@ -370,6 +438,18 @@ function OhlcLegend({ quote, hovered, currency, previousClose }) {
       <span className="text-[10px] text-gray-600">
         {hovered ? `· ${hovered.date} (candle)` : "· today"}
       </span>
+
+      {/* While the cursor is inspecting a historical candle the O/H/L/C above
+          belong to THAT candle, so the live price is pinned here as well — it
+          must never be the thing the user loses by hovering. */}
+      {hovered && livePrice > 0 && (
+        <span className="flex items-center gap-1 ml-auto pl-2 border-l border-white/10">
+          <span className="text-gray-600">LIVE</span>
+          <span className={`font-semibold ${dayUp ? "text-emerald-400" : "text-red-400"}`}>
+            {fmt(livePrice)}
+          </span>
+        </span>
+      )}
     </div>
   );
 }
@@ -489,6 +569,10 @@ export function StockChart({ stockId, symbol, currentPrice, currency = "₹", ac
     ? Number(quote.previous_close)
     : (data.length ? data[0].close : 0);
 
+  // Direction on the DAY (vs previous close), not across the visible window —
+  // this is what the price beside the header shows, and the two must agree.
+  const dayUp = Number(quote?.price_change_percent ?? 0) >= 0;
+
   const activeType = CHART_TYPES.find((t) => t.key === type) || CHART_TYPES[0];
 
   const commonAxes = (
@@ -500,6 +584,7 @@ export function StockChart({ stockId, symbol, currentPrice, currency = "₹", ac
              domain={domain} width={52} tickFormatter={(v) => `${currency}${Number(v).toFixed(0)}`} />
       <Tooltip content={<OhlcTooltip symbol={symbol} curr={currency} />}
                cursor={{ stroke: "rgba(255,255,255,0.15)" }} />
+
     </>
   );
 
@@ -692,6 +777,8 @@ export function StockChart({ stockId, symbol, currentPrice, currency = "₹", ac
             hovered={hovered}
             currency={currency}
             previousClose={quote?.previous_close}
+            livePrice={livePrice}
+            dayUp={dayUp}
           />
         </div>
       )}
@@ -724,6 +811,9 @@ export function StockChart({ stockId, symbol, currentPrice, currency = "₹", ac
             >
               {commonAxes}
               {renderSeries()}
+              {/* Drawn last so it sits above the candles, and outside
+                  renderSeries() so every chart type gets it. */}
+              <Customized component={makeLivePriceMarker(data, livePrice, dayUp ? UP : DOWN, currency)} />
             </ComposedChart>
           </ResponsiveContainer>
         )}

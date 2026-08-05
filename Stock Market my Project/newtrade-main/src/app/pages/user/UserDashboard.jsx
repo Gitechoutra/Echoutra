@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { useAuth } from "../../context/AuthContext";
 import { valueDomain, fmtAxisINR, showDots } from "../../utils/chart";
+import { inr } from "../../utils/currency";
 import { useLiveQuotes, liveStocks, liveHoldings, livePortfolio } from "../../context/LiveQuotesContext";
 import { StockLogo } from "../../components/StockLogo";
 
@@ -25,24 +26,11 @@ const secColors = ["#06B6D4", "#8B5CF6", "#F59E0B", "#10B981"];
 // All prices display in Indian Rupees (₹) across the platform.
 const currSym = () => "₹";
 
-const fmtMoney = (value, currency = "INR", { compact = false, decimals = 0 } = {}) => {
-  const sym = currSym(currency);
-  const num = Number(value) || 0;
-  if (compact) {
-    const abs = Math.abs(num);
-    if ((currency || "INR").toUpperCase() === "INR") {
-      if (abs >= 1e7) return `${sym}${(num / 1e7).toFixed(2)}Cr`;
-      if (abs >= 1e5) return `${sym}${(num / 1e5).toFixed(2)}L`;
-      if (abs >= 1e3) return `${sym}${(num / 1e3).toFixed(1)}K`;
-      return `${sym}${num.toFixed(decimals)}`;
-    }
-    if (abs >= 1e9) return `${sym}${(num / 1e9).toFixed(2)}B`;
-    if (abs >= 1e6) return `${sym}${(num / 1e6).toFixed(2)}M`;
-    if (abs >= 1e3) return `${sym}${(num / 1e3).toFixed(1)}K`;
-    return `${sym}${num.toFixed(decimals)}`;
-  }
-  return `${sym}${num.toLocaleString("en-IN", { maximumFractionDigits: decimals, minimumFractionDigits: decimals })}`;
-};
+/* Values are always written in full — see utils/currency. The `compact` option
+   this used to take is gone rather than ignored, so no call site can quietly
+   ask for an abbreviation again. */
+const fmtMoney = (value, currency = "INR", { decimals = 0 } = {}) =>
+  inr(value, { decimals });
 
 export function UserDashboard() {
   const navigate = useNavigate();
@@ -228,8 +216,20 @@ export function UserDashboard() {
   const todayPnl    = (holdings.length && prevDayValue > 0) ? dayPnlCalc : backendDay;
   const todayPnlPct = prevDayValue > 0 ? (dayPnlCalc / prevDayValue) * 100
                     : parseFloat(portfolio?.day_change_percent ?? summary?.portfolio?.day_change_percent ?? 0);
-  const openPositions = holdings.length;
-  const profitCount   = holdings.filter((h) => parseFloat(h.unrealized_pnl || 0) >= 0).length;
+  /* Open Positions counts ONLY intraday positions opened during the current
+     trading day. It used to be `holdings.length`, which counted delivery
+     holdings — shares owned outright, which are not "open positions" at all —
+     and never reset. The server flags each row (`is_open_position`), so the
+     count empties itself at the close and starts fresh next session without
+     the browser having to work out what "today" is. */
+  const openPositionRows = holdings.filter((h) => h.is_open_position === true);
+  const openPositions    = openPositionRows.length;
+  const profitCount      = openPositionRows.filter((h) => parseFloat(h.unrealized_pnl || 0) >= 0).length;
+
+  /* Holdings is the delivery book — always there, whatever the market is doing. */
+  const deliveryCount = holdings.filter(
+    (h) => (h.trade_mode || "DELIVERY") === "DELIVERY" && h.is_active !== false
+  ).length;
   const up            = totalReturn >= 0;
 
   const portfolioCurrency = portfolio?.currency || summary?.portfolio?.currency || "INR";
@@ -308,21 +308,21 @@ export function UserDashboard() {
         {[
           {
             label: "Portfolio Value",
-            value: fmtMoney(totalValue, portfolioCurrency, { compact: true }),
-            sub:   `${up ? "+" : "-"}${fmtMoney(Math.abs(totalReturn), portfolioCurrency, { compact: true })} all time`,
+            value: fmtMoney(totalValue, portfolioCurrency, { decimals: 0 }),
+            sub:   `${up ? "+" : "-"}${fmtMoney(Math.abs(totalReturn), portfolioCurrency, { decimals: 0 })} all time`,
             icon:  Wallet, up,
             color: "from-cyan-500/15 to-cyan-500/5", border: "border-cyan-500/15", ic: "text-cyan-400",
           },
           {
             label: "Today's P&L",
-            value: `${todayPnl >= 0 ? "+" : "-"}${fmtMoney(Math.abs(todayPnl), portfolioCurrency, { compact: true })}`,
+            value: `${todayPnl >= 0 ? "+" : "-"}${fmtMoney(Math.abs(todayPnl), portfolioCurrency, { decimals: 0 })}`,
             sub:   `${todayPnlPct >= 0 ? "+" : ""}${todayPnlPct.toFixed(2)}% today`,
             icon:  TrendingUp, up: todayPnl >= 0,
             color: "from-emerald-500/15 to-emerald-500/5", border: "border-emerald-500/15", ic: "text-emerald-400",
           },
           {
             label: "Cash Balance",
-            value: fmtMoney(cashBalance, walletCurrency, { compact: true }),
+            value: fmtMoney(cashBalance, walletCurrency, { decimals: 0 }),
             sub:   "Available to invest",
             icon:  IndianRupee, up: null,
             color: "from-blue-500/15 to-blue-500/5", border: "border-blue-500/15", ic: "text-blue-400",
@@ -330,17 +330,18 @@ export function UserDashboard() {
           {
             label: "Open Positions",
             value: openPositions.toString(),
-            sub:   `${profitCount} in profit`,
+            sub:   openPositions ? `${profitCount} in profit` : "None open today",
             icon:  PieIcon, up: null,
             color: "from-violet-500/15 to-violet-500/5", border: "border-violet-500/15", ic: "text-violet-400",
+            onClick: () => navigate("/user/positions"),
           },
           {
             label: "Holdings",
-            value: openPositions.toString(),
+            value: deliveryCount.toString(),
             sub:   "View all →",
             icon:  Briefcase, up: null,
             color: "from-amber-500/15 to-amber-500/5", border: "border-amber-500/15", ic: "text-amber-400",
-            onClick: () => navigate("/user/portfolio"),
+            onClick: () => navigate("/user/holdings"),
           },
         ].map((s, i) => (
           <motion.div
@@ -372,7 +373,7 @@ export function UserDashboard() {
             <div>
               <div className="text-xs text-gray-500 mb-0.5">My Portfolio Performance</div>
               <div className="text-2xl font-bold text-white">
-                {fmtMoney(totalValue, portfolioCurrency, { compact: true })}
+                {fmtMoney(totalValue, portfolioCurrency, { decimals: 0 })}
               </div>
               <div className={`flex items-center gap-1 mt-0.5 text-sm ${up ? "text-emerald-400" : "text-red-400"}`}>
                 {up ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
@@ -540,7 +541,7 @@ export function UserDashboard() {
                         <td className="px-5 py-3 text-sm text-gray-400">{fmtMoney(avgCost, hCurrency, { decimals: 2 })}</td>
                         <td className="px-5 py-3 text-sm text-white">{fmtMoney(currPx, hCurrency, { decimals: 2 })}</td>
                         <td className={`px-5 py-3 text-sm ${hUp ? "text-emerald-400" : "text-red-400"}`}>
-                          {hUp ? "+" : "-"}{fmtMoney(Math.abs(pnl), hCurrency, { compact: true })}
+                          {hUp ? "+" : "-"}{fmtMoney(Math.abs(pnl), hCurrency, { decimals: 0 })}
                         </td>
                         <td className={`px-5 py-3 text-sm ${hUp ? "text-emerald-400" : "text-red-400"}`}>
                           {hUp ? "+" : ""}{pct.toFixed(1)}%

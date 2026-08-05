@@ -20,6 +20,7 @@ import { UserDashboard } from "./pages/user/UserDashboard";
 import { UserMarket } from "./pages/user/UserMarket";
 import { UserStockDetail } from "./pages/user/UserStockDetail";
 import { UserPortfolio } from "./pages/user/UserPortfolio";
+import { UserHoldings, UserPositions } from "./pages/user/UserHoldings";
 import { UserWatchlist } from "./pages/user/UserWatchlist";
 import { UserTrade } from "./pages/user/UserTrade";
 import { UserNews } from "./pages/user/UserNews";
@@ -66,6 +67,8 @@ export const router = createBrowserRouter([
       { path: "market", Component: UserMarket },
       { path: "stock/:symbol", Component: UserStockDetail },
       { path: "portfolio", Component: UserPortfolio },
+      { path: "holdings",  Component: UserHoldings },
+      { path: "positions", Component: UserPositions },
       { path: "watchlist", Component: UserWatchlist },
       { path: "trade", Component: UserTrade },
       { path: "news", Component: UserNews },

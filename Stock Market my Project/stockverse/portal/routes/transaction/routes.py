@@ -21,6 +21,7 @@ from portal.models.transactions  import Transactions, TxnType, TxnStatus
 from portal.models.wallets       import Wallets
 from portal.models.wallet_transactions import WalletTransactions, WalletTransactionType, WalletTransactionStatus
 from portal.models.audit_logs    import AuditLogs
+from portal.models.trade_orders  import TradeOrders
 from portal import db
 
 from . import ns, logger
@@ -37,6 +38,10 @@ list_parser.add_argument('status',       type=str, required=False, location='arg
                           help='COMPLETED | PENDING | FAILED | REVERSED')
 list_parser.add_argument('stock_id',     type=int, required=False, location='args')
 list_parser.add_argument('portfolio_id', type=int, required=False, location='args')
+# Intraday vs Delivery. Read through the order the fill came from — Transactions
+# has no trade_mode column of its own.
+list_parser.add_argument('trade_mode',   type=str, required=False, location='args',
+                         help='INTRADAY | DELIVERY')
 list_parser.add_argument('from_date',    type=str, required=False, location='args',
                           help='ISO format: 2025-01-01')
 list_parser.add_argument('to_date',      type=str, required=False, location='args',
@@ -81,6 +86,11 @@ def _txn_dict(t: Transactions) -> dict:
         'company_name':    t.stock.company_name  if t.stock  else None,
         'logo_url':        t.stock.logo_url       if t.stock  else None,
         'order_id':        t.order_id,
+        # Which book this trade belongs to. Transactions has no trade_mode of its
+        # own — it is a property of the order that produced the fill — so it is
+        # read through the relationship rather than duplicated onto every row.
+        # Wallet-only rows (deposits, withdrawals) have no order and stay None.
+        'trade_mode':      (t.order.trade_mode or 'DELIVERY') if t.order else None,
         'portfolio_id':    t.portfolio_id,
         'wallet_txn_id':   t.wallet_txn_id,
         'quantity':        float(t.quantity)       if t.quantity       else None,
@@ -142,6 +152,19 @@ def _apply_filters(query, args, user_id=None):
         query = query.filter(Transactions.stock_id == args['stock_id'])
     if args.get('portfolio_id'):
         query = query.filter(Transactions.portfolio_id == args['portfolio_id'])
+    if args.get('trade_mode'):
+        # trade_mode lives on the ORDER, so this filters through the order the
+        # fill came from. Done in SQL rather than on the page the client happens
+        # to be showing, so pagination counts stay honest.
+        # DELIVERY also claims legacy rows whose trade_mode was never set, which
+        # is what they were before the column existed.
+        mode = args['trade_mode'].upper()
+        query = query.join(TradeOrders, Transactions.order_id == TradeOrders.order_id)
+        if mode == 'DELIVERY':
+            query = query.filter(db.or_(TradeOrders.trade_mode == mode,
+                                        TradeOrders.trade_mode.is_(None)))
+        else:
+            query = query.filter(TradeOrders.trade_mode == mode)
     if args.get('from_date'):
         query = query.filter(
             Transactions.transacted_at >= datetime.fromisoformat(args['from_date'])
@@ -188,7 +211,10 @@ class MyTransactions(Resource):
             # Only DEPOSIT/WITHDRAWAL — trade cash-movements (BUY_STOCK, SELL_STOCK,
             # FEE, …) are already represented by their Transactions rows, so pulling
             # them in here would create duplicate rows with no stock symbol.
-            if not ttype or ttype in WALLET_TYPES:
+            # A deposit or withdrawal belongs to neither book, so asking for
+            # Intraday or Delivery excludes them rather than showing wallet rows
+            # under a heading they have nothing to do with.
+            if (not ttype or ttype in WALLET_TYPES) and not args.get('trade_mode'):
                 wq = WalletTransactions.query.filter(
                     WalletTransactions.user_id == user_id,
                     WalletTransactions.transaction_type.in_(list(WALLET_TYPES)),

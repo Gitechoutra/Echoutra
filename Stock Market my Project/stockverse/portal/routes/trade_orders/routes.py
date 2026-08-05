@@ -22,6 +22,7 @@ from portal.models.audit_logs         import AuditLogs
 from portal.helpers.order_engine      import (
     execute_order as engine_execute_order,
     plan_position_effect, is_short, short_margin, _release_hold_on_close,
+    execute_ioc,
 )
 from portal.helpers                   import market_calendar
 from portal.helpers.validators        import (
@@ -45,6 +46,10 @@ place_parser.add_argument('stop_price',    type=float, required=False, location=
 # entry trigger. Can be combined with a limit price on the same order.
 place_parser.add_argument('stop_loss_price', type=float, required=False, location='json')
 place_parser.add_argument('order_duration',type=str,   required=False, location='json', default='DAY')
+# The Trade screen has always sent this name. The parser only read
+# order_duration, so DAY / GTC / IOC were silently discarded and every order
+# became DAY. Accepted as an alias rather than renamed, so both clients work.
+place_parser.add_argument('time_in_force', type=str,   required=False, location='json')
 place_parser.add_argument('trade_mode',    type=str,   required=False, location='json', default='DELIVERY')  # DELIVERY / INTRADAY
 place_parser.add_argument('portfolio_id',  type=int,   required=False, location='json')
 
@@ -133,6 +138,10 @@ class PlaceOrder(Resource):
             order_side   = (args.get('order_side') or '').upper()
             order_type   = (args.get('order_type') or '').upper()
             trade_mode   = (args.get('trade_mode') or TradeMode.DELIVERY).upper()
+            # time_in_force wins when both are sent; they are the same field
+            # under two names.
+            validity     = (args.get('time_in_force') or args.get('order_duration')
+                            or OrderDuration.DAY).upper()
             portfolio_id = args.get('portfolio_id')
 
             # ── Validations ───────────────────────────────────────────────────
@@ -147,6 +156,7 @@ class PlaceOrder(Resource):
                 [OrderType.MARKET, OrderType.LIMIT, OrderType.STOP, OrderType.STOP_LIMIT],
                 label='order_type'))
             v.check('trade_mode',  validate_choice(trade_mode, TradeMode.CHOICES, label='trade_mode'))
+            v.check('validity',    validate_choice(validity, OrderDuration.CHOICES, label='validity'))
             v.check('quantity',    validate_quantity(args.get('quantity')))
             if args.get('limit_price') is not None:
                 v.check('limit_price', validate_price(args['limit_price'], label='Limit price'))
@@ -157,11 +167,14 @@ class PlaceOrder(Resource):
             if not v.ok:
                 return v.response()
 
-            # Delivery is a cash-and-carry buy/sell — Market orders only. Limit &
-            # Stop-loss are reserved for Intraday.
-            if trade_mode == TradeMode.DELIVERY and order_type != OrderType.MARKET:
+            # Delivery accepts MARKET and LIMIT. A delivery LIMIT is what gives
+            # GTC somewhere to live: it can sit pending across sessions until it
+            # fills or the user cancels it, whereas every intraday order is
+            # cancelled at the close. STOP entries stay intraday-only — a stop is
+            # protection for a position you are actively managing that session.
+            if trade_mode == TradeMode.DELIVERY and order_type not in (OrderType.MARKET, OrderType.LIMIT):
                 return jsonify(bool=False, status=400, response={
-                    'message': 'Delivery supports Market orders only. Use Intraday for Limit / Stop orders.'})
+                    'message': 'Delivery supports Market and Limit orders. Use Intraday for Stop orders.'})
 
             # ── Trading window ────────────────────────────────────────────────
             # Nothing below this line may run outside continuous trading: a
@@ -347,7 +360,7 @@ class PlaceOrder(Resource):
             order.trade_mode        = trade_mode
             order.position_effect   = position_effect
             order.order_status      = OrderStatus.PENDING
-            order.order_duration    = args.get('order_duration', OrderDuration.DAY).upper()
+            order.order_duration    = validity
             order.quantity          = quantity
             order.filled_quantity   = Decimal('0')
             order.remaining_quantity= quantity
@@ -359,9 +372,15 @@ class PlaceOrder(Resource):
             order.order_source      = 'WEB'
             order.save()
 
-            # Execute immediately for MARKET orders; queue the rest for the engine.
+            # IOC never rests: it takes what can trade this instant and cancels
+            # the rest, so it is settled here rather than handed to the engine.
+            ioc = None
             exec_rec = None
-            if order_type == OrderType.MARKET:
+            if validity in (OrderDuration.IOC, OrderDuration.FOK):
+                ioc = execute_ioc(order, current_price,
+                                  all_or_none=(validity == OrderDuration.FOK))
+                exec_rec = ioc['execution']
+            elif order_type == OrderType.MARKET:
                 portfolio_obj = Portfolios.query.get(portfolio_id)
                 exec_rec = _execute_market_order(order, stock, wallet, portfolio_obj)
             elif position_effect == PositionEffect.OPEN:
@@ -383,13 +402,31 @@ class PlaceOrder(Resource):
             log.status     = 'SUCCESS'
             log.save()
 
+            # An IOC reports exactly what happened to each share the user asked
+            # for — how many traded and how many were cancelled — because with
+            # IOC there is no pending row left for them to go and look at.
+            if ioc:
+                filled, cancelled = float(ioc['filled']), float(ioc['cancelled'])
+                if ioc['status'] == OrderStatus.CANCELLED:
+                    message = order.rejection_reason or 'IOC order cancelled — nothing could be filled.'
+                elif ioc['status'] == OrderStatus.PARTIALLY_FILLED:
+                    message = (f'Partially filled: {filled:g} of {filled + cancelled:g} '
+                               f'{stock.ticker_symbol} executed, {cancelled:g} cancelled.')
+                else:
+                    message = f'Filled {filled:g} {stock.ticker_symbol} immediately.'
+            else:
+                message = 'Order placed successfully.'
+
             return jsonify(bool=True, status=200, response={
-                'message':        'Order placed successfully.',
+                'message':        message,
                 'order_id':       order.order_id,
                 'order_status':   order.order_status,
+                'validity':       order.order_duration,
                 'execution_id':   exec_rec.execution_id if exec_rec else None,
                 'fill_price':     float(order.avg_fill_price) if order.avg_fill_price else None,
                 'filled_amount':  float(order.filled_amount)  if order.filled_amount  else None,
+                'filled_quantity':    float(ioc['filled'])    if ioc else None,
+                'cancelled_quantity': float(ioc['cancelled']) if ioc else None,
             })
 
         except Exception as e:

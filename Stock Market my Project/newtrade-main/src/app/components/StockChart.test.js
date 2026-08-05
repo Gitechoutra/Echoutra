@@ -11,7 +11,10 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { applyTick, genSeries, segmentStops, baselineOffset } from "./StockChart";
+import {
+  applyTick, genSeries, segmentStops, baselineOffset, timeframeLabels, TIMEFRAMES,
+  makeLivePriceMarker,
+} from "./StockChart";
 
 const UP = "#10B981";
 const DOWN = "#EF4444";
@@ -156,6 +159,114 @@ describe("baselineOffset", () => {
   it("falls back to the middle rather than dividing by zero", () => {
     expect(baselineOffset(50, [50, 50])).toBe(0.5);
     expect(baselineOffset(50, ["auto", "auto"])).toBe(0.5);
+  });
+});
+
+// ── Live price marker ───────────────────────────────────────────────────────
+
+/** Minimal stand-ins for the scales recharts hands a <Customized> layer. */
+function axisProps(bars, { width = 400, left = 0 } = {}) {
+  const xScale = (d) => 10 + bars.findIndex((b) => b.date === d) * 20;
+  xScale.bandwidth = () => 10;
+  return {
+    xAxisMap: { 0: { scale: xScale } },
+    yAxisMap: { 0: { scale: (v) => 500 - Number(v) } },
+    offset:   { left, width },
+  };
+}
+
+/** Flatten a rendered element tree into a list of nodes. */
+const nodes = (el) => {
+  const out = [];
+  const walk = (n) => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(walk);
+    out.push(n);
+    walk(n.props?.children);
+  };
+  walk(el);
+  return out;
+};
+
+describe("live price marker", () => {
+  const bars = [
+    { date: "a", close: 100 }, { date: "b", close: 101 }, { date: "c", close: 102 },
+  ];
+
+  it("sits on the NEWEST bar, at the live price", () => {
+    const Marker = makeLivePriceMarker(bars, 102.5, "#10B981", "₹");
+    const found  = nodes(Marker(axisProps(bars))).filter((n) => n.type === "circle");
+
+    // Last bar: x = 10 + 2*20 + bandwidth/2 = 55. y = 500 - 102.5.
+    expect(found.length).toBeGreaterThan(0);
+    for (const c of found) {
+      expect(c.props.cx).toBe(55);
+      expect(c.props.cy).toBeCloseTo(397.5, 6);
+    }
+  });
+
+  it("labels it with the live price", () => {
+    const Marker = makeLivePriceMarker(bars, 14157, "#10B981", "₹");
+    const text   = nodes(Marker(axisProps(bars, { width: 4000 }))).find((n) => n.type === "text");
+    expect(text.props.children).toBe("₹14157.00");
+  });
+
+  it("puts the chip left of the dot, and flips only when there is no room", () => {
+    const Marker = makeLivePriceMarker(bars, 102, "#10B981", "₹");
+
+    // Plenty of room to the left of x=55? "₹102.00" is 7 chars -> 52 wide,
+    // needing x-62 >= left. With left=0 that is -7, so it flips right.
+    const tight = nodes(Marker(axisProps(bars, { left: 0 }))).find((n) => n.type === "rect");
+    expect(tight.props.x).toBeGreaterThan(55);
+
+    // Shift the plot left edge far negative and the chip fits on the left.
+    const roomy = nodes(Marker(axisProps(bars, { left: -500 }))).find((n) => n.type === "rect");
+    expect(roomy.props.x).toBeLessThan(55);
+  });
+
+  it("draws nothing rather than guessing when inputs are unusable", () => {
+    const P = axisProps(bars);
+    expect(makeLivePriceMarker([], 100, "#fff", "₹")(P)).toBeNull();
+    expect(makeLivePriceMarker(bars, 0, "#fff", "₹")(P)).toBeNull();
+    expect(makeLivePriceMarker(bars, 100, "#fff", "₹")({})).toBeNull();
+  });
+
+  it("never intercepts the cursor — hovering must still read the candle", () => {
+    const Marker = makeLivePriceMarker(bars, 102, "#10B981", "₹");
+    const g = Marker(axisProps(bars));
+    expect(g.props.style.pointerEvents).toBe("none");
+  });
+});
+
+// ── Timeframe x-axis integrity ──────────────────────────────────────────────
+
+describe("timeframe labels", () => {
+  /* `date` is the category key on the x-axis. Two bars sharing a label get
+     stacked onto one x position by recharts, which is what drew 1M as a single
+     flat line: 90 bars at 8-hour steps produced only 31 unique "M/D" labels.
+     This is the guard that would have caught it. */
+  it.each(TIMEFRAMES)("%s gives every bar its own x position", (tf) => {
+    const labels = timeframeLabels(tf);
+    const unique = new Set(labels).size;
+    expect(unique).toBe(labels.length);
+  });
+
+  it("1M specifically — the timeframe that was broken", () => {
+    const labels = timeframeLabels("1M");
+    expect(labels.length).toBeGreaterThan(20);       // a month's worth of bars
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("is stable across the day boundary it is measured from", () => {
+    // Same check anchored at a few different clock times, since the collapse
+    // depended on where "now" fell within a day.
+    for (const hour of [0, 6, 13, 23]) {
+      const at = new Date(2026, 6, 17, hour, 30).getTime();
+      for (const tf of TIMEFRAMES) {
+        const labels = timeframeLabels(tf, at);
+        expect(new Set(labels).size, `${tf} at ${hour}:30`).toBe(labels.length);
+      }
+    }
   });
 });
 

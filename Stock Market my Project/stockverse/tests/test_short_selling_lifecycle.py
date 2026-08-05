@@ -543,3 +543,172 @@ def test_a_stale_stop_cannot_open_a_short(flask_app, ctx, monkeypatch):
     assert sl.order_status == OrderStatus.REJECTED
     assert 'already closed' in sl.rejection_reason.lower()
     assert _position(ctx) is None, 'a stale stop must never open a new position'
+
+
+# ── Order validity: IOC ─────────────────────────────────────────────────────
+# IOC never rests. It takes what can trade this instant and cancels the rest, so
+# the thing to pin is exactly how much "what can trade" is — and that the
+# remainder never survives as a pending order.
+
+def _ioc(ctx, side, quantity, order_type=OrderType.MARKET, limit=None):
+    from portal.models.trade_orders import OrderDuration
+    o = _order(ctx, side, quantity, PositionEffect.OPEN)
+    o.order_type     = order_type
+    o.order_duration = OrderDuration.IOC
+    if limit is not None:
+        o.limit_price = D(limit)
+    o.update()
+    return o
+
+
+def _set_wallet(ctx, balance):
+    w = _wallet(ctx)
+    w.balance           = D(balance)
+    w.locked_balance    = D(0)
+    w.available_balance = D(balance)
+    w.update()
+
+
+def test_ioc_fills_completely_when_the_money_is_there(flask_app, ctx):
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 100000); _set_price(ctx, 1000)
+
+    r = execute_ioc(_ioc(ctx, OrderSide.BUY, 5), D(1000))
+    assert r['filled'] == 5
+    assert r['cancelled'] == 0
+    assert r['status'] == OrderStatus.FILLED
+    assert D(_position(ctx).quantity) == 5
+
+
+def test_ioc_fills_what_the_wallet_covers_and_cancels_the_rest(flask_app, ctx):
+    """The partial case: 10 shares wanted at 1,000 with only ~3,000 to spend."""
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 3100); _set_price(ctx, 1000)
+
+    order = _ioc(ctx, OrderSide.BUY, 10)
+    r = execute_ioc(order, D(1000))
+
+    assert r['filled'] == 3, 'should buy the three it can afford'
+    assert r['cancelled'] == 7
+    assert r['status'] == OrderStatus.PARTIALLY_FILLED
+    assert D(_position(ctx).quantity) == 3
+
+    db.session.expire_all()
+    o = TradeOrders.query.get(order.order_id)
+    # Nothing left resting — that is the whole point of IOC.
+    assert D(o.remaining_quantity) == 0
+    assert o.order_status not in (OrderStatus.PENDING, OrderStatus.OPEN)
+    assert D(o.quantity) == 10, 'the order still records what was asked for'
+    assert D(o.filled_quantity) == 3
+    assert '3' in o.rejection_reason and '7' in o.rejection_reason
+
+
+def test_ioc_cancels_outright_when_nothing_is_affordable(flask_app, ctx):
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 10); _set_price(ctx, 1000)
+
+    r = execute_ioc(_ioc(ctx, OrderSide.BUY, 5), D(1000))
+    assert r['filled'] == 0
+    assert r['cancelled'] == 5
+    assert r['status'] == OrderStatus.CANCELLED
+    assert _position(ctx) is None
+
+
+def test_ioc_sell_is_capped_by_the_shares_actually_held(flask_app, ctx):
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 100000); _set_price(ctx, 1000)
+
+    # Own 4, try to sell 9 as a CLOSE — only 4 can trade.
+    execute_order(_order(ctx, OrderSide.BUY, 4, PositionEffect.OPEN), D(1000), funds_locked=False)
+    o = _ioc(ctx, OrderSide.SELL, 9)
+    o.position_effect = PositionEffect.CLOSE
+    o.update()
+
+    r = execute_ioc(o, D(1000))
+    assert r['filled'] == 4
+    assert r['cancelled'] == 5
+    assert r['status'] == OrderStatus.PARTIALLY_FILLED
+    assert _position(ctx) is None, 'selling everything held closes the position'
+
+
+def test_ioc_limit_cancels_when_the_market_is_not_at_the_price(flask_app, ctx):
+    """An IOC never waits for the price to come to it."""
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 100000); _set_price(ctx, 1000)
+
+    # Bid 900 while the market is 1,000 — unfillable right now.
+    r = execute_ioc(_ioc(ctx, OrderSide.BUY, 2, OrderType.LIMIT, limit=900), D(1000))
+    assert r['filled'] == 0
+    assert r['status'] == OrderStatus.CANCELLED
+    assert _position(ctx) is None
+
+
+def test_ioc_limit_fills_when_the_market_is_already_through_the_price(flask_app, ctx):
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 100000); _set_price(ctx, 950)
+
+    r = execute_ioc(_ioc(ctx, OrderSide.BUY, 2, OrderType.LIMIT, limit=1000), D(950))
+    assert r['filled'] == 2
+    assert r['status'] == OrderStatus.FILLED
+
+
+def test_an_ioc_order_is_never_re_filled_later(flask_app, ctx, monkeypatch):
+    """The one that matters. A partially filled IOC stays PARTIALLY_FILLED — the
+    user asked for that state to be visible — but PARTIALLY_FILLED is in
+    _OPEN_STATUSES, so without a guard the engine would come back later and fill
+    the remainder it had already told the user was cancelled."""
+    from portal.helpers.order_engine import execute_ioc, process_pending_orders
+    monkeypatch.setattr(mc, 'is_market_open', lambda *a, **k: True)
+    _flatten(ctx); _set_wallet(ctx, 3100); _set_price(ctx, 1000)
+
+    # A LIMIT IOC, because those are the types the engine actually scans.
+    order = _ioc(ctx, OrderSide.BUY, 10, OrderType.LIMIT, limit=1000)
+    r = execute_ioc(order, D(1000))
+    assert r['status'] == OrderStatus.PARTIALLY_FILLED
+    filled_then = D(_position(ctx).quantity)
+
+    # Give it every chance: money back in the wallet, price still at the limit.
+    _set_wallet(ctx, 100000)
+    process_pending_orders()
+
+    db.session.expire_all()
+    assert D(_position(ctx).quantity) == filled_then, 'the cancelled remainder must never fill'
+    assert D(TradeOrders.query.get(order.order_id).filled_quantity) == filled_then
+
+
+def test_no_ioc_order_is_left_resting_with_quantity_outstanding(flask_app, ctx):
+    """Whatever the outcome, an IOC leaves nothing for the engine to act on."""
+    from portal.helpers.order_engine import execute_ioc, _OPEN_STATUSES
+    _flatten(ctx); _set_wallet(ctx, 3100); _set_price(ctx, 1000)
+
+    for qty in (2, 10, 500):
+        execute_ioc(_ioc(ctx, OrderSide.BUY, qty), D(1000))
+
+    db.session.expire_all()
+    actionable = TradeOrders.query.filter(
+        TradeOrders.order_status.in_(_OPEN_STATUSES),
+        TradeOrders.remaining_quantity > 0,
+        TradeOrders.order_duration == 'IOC').count()
+    assert actionable == 0
+
+
+def test_fok_refuses_a_partial_rather_than_taking_it(flask_app, ctx):
+    """FOK is accepted by the API, so it needs real behaviour — otherwise it
+    validates as legal and quietly acts like a DAY order."""
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 3100); _set_price(ctx, 1000)
+
+    r = execute_ioc(_ioc(ctx, OrderSide.BUY, 10), D(1000), all_or_none=True)
+    assert r['filled'] == 0, 'FOK must not part-fill'
+    assert r['cancelled'] == 10
+    assert r['status'] == OrderStatus.CANCELLED
+    assert _position(ctx) is None
+
+
+def test_fok_fills_when_the_whole_quantity_is_affordable(flask_app, ctx):
+    from portal.helpers.order_engine import execute_ioc
+    _flatten(ctx); _set_wallet(ctx, 100000); _set_price(ctx, 1000)
+
+    r = execute_ioc(_ioc(ctx, OrderSide.BUY, 3), D(1000), all_or_none=True)
+    assert r['filled'] == 3
+    assert r['status'] == OrderStatus.FILLED

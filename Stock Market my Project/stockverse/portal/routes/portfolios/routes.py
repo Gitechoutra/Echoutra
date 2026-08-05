@@ -1,5 +1,6 @@
 import logging
 import traceback
+from datetime import timezone
 
 from flask import jsonify
 from flask_restx import Namespace, Resource, reqparse
@@ -9,6 +10,7 @@ from portal.models.portfolios                  import Portfolios, PortfolioType
 from portal.models.portfolio_holdings          import PortfolioHoldings
 from portal.models.portfolio_performance_history import PortfolioPerformanceHistory
 from portal.models.stocks                      import Stocks
+from portal.helpers                            import market_calendar
 
 from . import ns, logger
 
@@ -58,6 +60,44 @@ def _portfolio_dict(p: Portfolios) -> dict:
     }
 
 
+def _is_open_position_today(h: PortfolioHoldings) -> bool:
+    """An "Open Position" in the dashboard sense.
+
+    Deliberately narrower than "an active holding": only an INTRADAY position,
+    still open, and opened during the CURRENT trading day in IST. Delivery is
+    owned outright and belongs in Holdings; yesterday's intraday was squared off
+    at the close, so it is history rather than something the user still carries.
+
+    The result is that the count resets on its own each morning — nothing has to
+    be cleared down.
+    """
+    if not h.is_active:
+        return False
+    if (h.trade_mode or 'DELIVERY') != 'INTRADAY':
+        return False
+    opened = h.first_bought_at
+    if not opened:
+        return False
+    if opened.tzinfo is None:
+        opened = opened.replace(tzinfo=timezone.utc)
+    return opened.astimezone(market_calendar.IST).date() == market_calendar.now_ist().date()
+
+
+def _traded_quantity(h: PortfolioHoldings) -> float:
+    """The size the position was opened at.
+
+    While it is open that is simply `quantity`. Once closed `quantity` is 0, so
+    it is recovered from cost ÷ entry price — the two fields the close path
+    leaves alone.
+    """
+    qty = float(h.quantity or 0)
+    if qty > 0:
+        return qty
+    entry = float(h.average_buy_price or 0)
+    cost  = float(h.total_invested or 0)
+    return round(cost / entry, 6) if entry > 0 else 0.0
+
+
 def _holding_dict(h: PortfolioHoldings) -> dict:
     return {
         'holding_id':             h.holding_id,
@@ -74,7 +114,15 @@ def _holding_dict(h: PortfolioHoldings) -> dict:
         'is_short':               (h.position_side == 'SHORT'),
         'is_active':              bool(h.is_active),
         'position_status':        ('OPEN' if h.is_active else 'CLOSED'),
+        # True only for an intraday position opened during the current IST
+        # trading day — what the dashboard's "Open Positions" card counts.
+        'is_open_position':       _is_open_position_today(h),
         'quantity':               float(h.quantity),
+        # How many shares the position was FOR. `quantity` is what remains open,
+        # which is 0 once a position closes — accurate, but it renders as "0
+        # shares" against a trade that plainly happened. total_invested is left
+        # untouched on close, so it still divides back to the traded size.
+        'quantity_traded':        _traded_quantity(h),
         'average_buy_price':      float(h.average_buy_price),
         'average_entry_price':    float(h.average_buy_price),   # clearer name for shorts
         'total_invested':         float(h.total_invested),

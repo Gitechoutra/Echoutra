@@ -45,6 +45,13 @@ function loadRazorpay() {
   });
 }
 
+/* Time-in-force, in plain words. */
+const TIF_HINTS = {
+  DAY: "Rests until the market closes today, then cancels if unfilled.",
+  GTC: "Rests until it fills or you cancel it — carries across sessions.",
+  IOC: "Fills whatever it can right now; anything unfilled is cancelled.",
+};
+
 const STATUS_CONFIG = {
   FILLED:    { color: "text-emerald-400", bg: "bg-emerald-500/10", Icon: CheckCircle },
   PENDING:   { color: "text-amber-400",   bg: "bg-amber-500/10",   Icon: Clock },
@@ -68,6 +75,10 @@ export function UserTrade() {
   /* ── Form state ── */
   const [tradeType,  setTradeType]  = useState("BUY");
   const [orderType,  setOrderType]  = useState("MARKET");
+  /* Product and Stop Loss, matching the stock-detail ticket. Stop loss is
+     intraday-only, so it appears once Intraday is selected. */
+  const [tradeMode,  setTradeMode]  = useState("DELIVERY");   // DELIVERY | INTRADAY
+  const [stopLossPx, setStopLossPx] = useState("");
   const [qty,        setQty]        = useState("1");
   const [limitPx,    setLimitPx]    = useState("");
   const [tif,        setTif]        = useState("DAY");
@@ -245,6 +256,18 @@ export function UserTrade() {
   const changePct     = parseFloat(selStockLive?.price_change_percent || 0);
   const isUp          = changePct >= 0;
 
+  /* Stop loss — checked against the ENTRY price (the limit), shown as a % from
+     the live price so it re-reads on every tick. Same rules as the stock ticket. */
+  const slValue = parseFloat(stopLossPx);
+  const slError = !stopLossPx || isNaN(slValue) ? ""
+    : slValue <= 0 ? "Enter a valid stop loss."
+    : tradeType === "BUY" && slValue >= execPx
+      ? `Must be below your buy price of ${fmtPx(execPx)} — it would trigger immediately.`
+    : "";
+  const slPct = slValue > 0 && currentPrice > 0
+    ? ((slValue - currentPrice) / currentPrice) * 100
+    : null;
+
   /* ════════════════════════════════════════════════════════
      PLACE ORDER (core logic)
      Called after any required Razorpay top-up succeeds,
@@ -269,6 +292,8 @@ export function UserTrade() {
       if (pxError) { showToast(pxError, false); return; }
     }
 
+    if (slError) { showToast(slError, false); setPlacing(false); setConfirmOpen(false); return; }
+
     if (tradeType === "SELL" && qtyNum > myShares) {
       showToast(`You only own ${myShares} shares of ${selStock.ticker_symbol}.`, false); return;
     }
@@ -283,11 +308,17 @@ export function UserTrade() {
         stock_id:   selStock.stock_id,
         order_side: tradeType,                    // "BUY" | "SELL"
         order_type: orderType,                    // "MARKET" | "LIMIT"
+        trade_mode: tradeMode,                    // DELIVERY | INTRADAY
         quantity:   qtyNum,
         ...(orderType !== "MARKET" && limitPx
           ? { limit_price: parseFloat(limitPx) }
           : {}),
-        time_in_force: tif,
+        // Intraday only, and only on a Limit order — same rule as the stock
+        // ticket, so the two screens cannot disagree about what is allowed.
+        ...(tradeMode === "INTRADAY" && orderType === "LIMIT" && stopLossPx
+          ? { stop_loss_price: parseFloat(stopLossPx) }
+          : {}),
+        time_in_force: tif,                       // DAY | GTC | IOC
       };
 
       const res  = await fetch(`${API_BASE}/trade_orders/place`, {
@@ -302,9 +333,10 @@ export function UserTrade() {
         setPlacing(false); setConfirmOpen(false); return;
       }
 
-      showToast(
-        `${tradeType === "BUY" ? "Bought" : "Sold"} ${qtyNum} × ${selStock.ticker_symbol} successfully!`
-      );
+      // The server's message, not an assumption: an IOC may have filled part of
+      // the quantity, or none of it, and saying "Bought 5" either way is false.
+      showToast(data.response?.message
+        || `${tradeType === "BUY" ? "Bought" : "Sold"} ${qtyNum} × ${selStock.ticker_symbol} successfully!`);
       setConfirmOpen(false);
       await Promise.allSettled([fetchHistory(), fetchWallet(), fetchHoldings()]);
     } catch {
@@ -633,12 +665,40 @@ export function UserTrade() {
                   </div>
                 )}
 
+                {/* Product — same choice as the stock ticket, so a user does not
+                    have to leave this screen to trade intraday. */}
+                <div>
+                  <label className="text-xs text-gray-500 mb-2 block">Product</label>
+                  <div className="flex gap-2">
+                    {[
+                      { key: "DELIVERY", label: "Delivery", hint: "Held in portfolio" },
+                      { key: "INTRADAY", label: "Intraday", hint: "Square off later" },
+                    ].map(m => (
+                      <button key={m.key}
+                        onClick={() => {
+                          setTradeMode(m.key);
+                          // Stop loss belongs to intraday; clear it rather than
+                          // submit a value the user can no longer see.
+                          if (m.key !== "INTRADAY") setStopLossPx("");
+                        }}
+                        className={`flex-1 py-2 rounded-xl border transition-all cursor-pointer ${
+                          tradeMode === m.key
+                            ? "border-cyan-500/50 bg-cyan-500/10 text-cyan-400"
+                            : "border-white/8 bg-[#141C30] text-gray-500 hover:text-gray-300"
+                        }`}>
+                        <div className="text-xs font-medium">{m.label}</div>
+                        <div className="text-[10px] text-gray-600">{m.hint}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {/* Order type */}
                 <div>
                   <label className="text-xs text-gray-500 mb-2 block">Order Type</label>
                   <div className="flex gap-2">
                     {["MARKET","LIMIT"].map(ot => (
-                      <button key={ot} onClick={() => { setOrderType(ot); setLimitPx(""); }}
+                      <button key={ot} onClick={() => { setOrderType(ot); setLimitPx(""); if (ot !== "LIMIT") setStopLossPx(""); }}
                         className={`flex-1 py-2 text-xs rounded-xl capitalize border transition-all cursor-pointer ${
                           orderType === ot
                             ? "border-cyan-500/50 bg-cyan-500/10 text-cyan-400 font-semibold"
@@ -696,7 +756,31 @@ export function UserTrade() {
                   </div>
                 )}
 
-                {/* Time in Force */}
+                {/* Stop loss — intraday + limit only, matching the stock ticket */}
+                {tradeMode === "INTRADAY" && orderType === "LIMIT" && (
+                  <div>
+                    <label className="text-xs text-gray-500 mb-2 flex items-center gap-1.5">
+                      Stop Loss <span className="text-gray-600">(optional)</span>
+                      {slPct !== null && (
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tabular-nums ${
+                          slPct < 0 ? "bg-red-500/10 text-red-400" : "bg-emerald-500/10 text-emerald-400"}`}>
+                          {slPct > 0 ? "+" : ""}{slPct.toFixed(2)}%
+                        </span>
+                      )}
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 text-sm">{sym(stockCurrency)}</span>
+                      <input type="text" inputMode="decimal" value={stopLossPx}
+                        onChange={e => setStopLossPx(filterDecimal(e.target.value, 2))}
+                        placeholder={tradeType === "BUY" ? "Sell if price falls to…" : "Cover if price rises to…"}
+                        aria-label="Stop loss price"
+                        className="w-full bg-[#141C30] border border-white/8 rounded-xl pl-6 pr-3 py-2.5 text-sm text-white focus:outline-none focus:border-cyan-500/30" />
+                    </div>
+                    {slError && <div className="text-[10px] text-red-400 mt-1.5">{slError}</div>}
+                  </div>
+                )}
+
+                {/* Time in Force — what happens to the order if it cannot fill */}
                 <div>
                   <label className="text-xs text-gray-500 mb-2 block">Time in Force</label>
                   <div className="flex gap-2">
@@ -711,6 +795,9 @@ export function UserTrade() {
                       </button>
                     ))}
                   </div>
+                  {/* These change what happens to money, so each one says what
+                      it will do rather than leaving the acronym to be guessed. */}
+                  <div className="text-[10px] text-gray-600 mt-1.5">{TIF_HINTS[tif]}</div>
                 </div>
 
                 {/* Order summary */}

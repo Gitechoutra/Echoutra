@@ -1,3 +1,5 @@
+import { inr0 } from "./currency";
+
 /**
  * chart.js
  * ─────────────────────────────────────────────────────────────────────────
@@ -37,17 +39,14 @@ export const valueDomain = ([min, max]) => {
 };
 
 /**
- * fmtAxisINR — compact rupee ticks in Indian units.
- * ₹1.2L / ₹3.4Cr rather than "₹120k" / "₹34000k".
+ * fmtAxisINR — rupee axis ticks, written out in full.
+ *
+ * These used to be abbreviated (₹1.2L, ₹34Cr). Axis labels are the reference a
+ * user reads the whole chart against, so an abbreviation there quietly rounds
+ * every point they infer from it. Full Indian grouping instead; the axis is
+ * given the extra width it needs at the call sites.
  */
-export const fmtAxisINR = (v) => {
-  const n = Math.abs(Number(v) || 0);
-  const s = Number(v) < 0 ? "-" : "";
-  if (n >= 1e7) return `${s}₹${(n / 1e7).toFixed(n >= 1e8 ? 0 : 1)}Cr`;
-  if (n >= 1e5) return `${s}₹${(n / 1e5).toFixed(n >= 1e6 ? 0 : 1)}L`;
-  if (n >= 1e3) return `${s}₹${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k`;
-  return `${s}₹${n.toFixed(0)}`;
-};
+export const fmtAxisINR = (v) => inr0(v);
 
 /**
  * Show point markers only on a short series — on a long one they turn the line

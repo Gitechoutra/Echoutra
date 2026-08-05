@@ -12,6 +12,15 @@ import { useMarketStatus } from "../../hooks/useMarketStatus";
 import { useLiveQuotes, liveStock, liveHolding } from "../../context/LiveQuotesContext";
 import { StockLogo } from "../../components/StockLogo";
 import { filterQuantity, filterDecimal } from "../../utils/validation";
+import { inr, inr0 } from "../../utils/currency";
+
+/* Time-in-force in plain words — these change what happens to money, so the
+   acronym is never left to be guessed at. */
+const VALIDITY_HINTS = {
+  DAY: "Rests until the market closes today, then cancels if unfilled.",
+  GTC: "Rests until it fills or you cancel it — carries across sessions.",
+  IOC: "Fills whatever it can right now; anything unfilled is cancelled.",
+};
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -71,10 +80,12 @@ export function UserStockDetail() {
   const [qty,          setQty]          = useState("");
   const [limitPx,      setLimitPx]      = useState("");   // entry price for a Limit order
   const [stopLossPx,   setStopLossPx]   = useState("");   // protective exit, set independently
+  const [validity,     setValidity]     = useState("DAY");  // DAY | GTC | IOC
   const [confirm,      setConfirm]      = useState(false);
   const [placeErr,     setPlaceErr]     = useState("");
   const [placingOrder, setPlacingOrder] = useState(false);
   const [placed,       setPlaced]       = useState(false);
+  const [placedMsg,    setPlacedMsg]    = useState("");
   const [buyingPower,  setBuyingPower]  = useState(0);
 
   // ── Fetchers ──────────────────────────────────────────────────────────────
@@ -251,7 +262,7 @@ export function UserStockDetail() {
         trade_mode:     tradeMode.toUpperCase(),   // DELIVERY | INTRADAY
         exchange:       exchange,                  // NSE | BSE
         quantity:       quantity,
-        order_duration: "DAY",
+        time_in_force:  validity,          // DAY | GTC | IOC
       };
       // Entry level.
       if (orderType === "limit" && limitPx) body.limit_price = parseFloat(limitPx);
@@ -273,12 +284,14 @@ export function UserStockDetail() {
       catch { setPlaceErr(`Server error (${res.status}).`); return; }
 
       if (data.bool) {
-        setConfirm(false); setPlaced(true);
-        setTimeout(() => setPlaced(false), 4000);
+        setConfirm(false);
+        setPlacedMsg(data.response?.message || "Order placed successfully.");
+        setPlaced(true);
+        setTimeout(() => setPlaced(false), 6000);
         await Promise.all([fetchUserHoldings(stock), fetchWallet()]);
         // Back to an empty ticket, not "0" — the user should be able to type the
         // next quantity straight in.
-        setQty(""); setLimitPx(""); setStopLossPx(""); setPlaceErr("");
+        setQty(""); setLimitPx(""); setStopLossPx(""); setValidity("DAY"); setPlaceErr("");
       } else {
         const msg = data.response?.message || "Failed to place order.";
         // Insufficient wallet funds → point the user at Add Money.
@@ -365,6 +378,12 @@ export function UserStockDetail() {
     : "";
   // What the stop caps the loss at, if it fills exactly there.
   const slRisk = Math.abs(execPx - (slValue || execPx)) * (parseFloat(qty) || 0);
+  // How far the stop sits from the CURRENT market price, as a percentage.
+  // Measured against the live price rather than the limit price so it re-reads
+  // on every tick — it answers "how much further can this fall before I'm out?".
+  const slPct = slValue > 0 && marketPx > 0
+    ? ((slValue - marketPx) / marketPx) * 100
+    : null;
   // A sensible default one click away — 1% the protective side of the entry.
   const slSuggestion = execPx > 0
     ? (tradeType === "buy" ? execPx * 0.99 : execPx * 1.01).toFixed(2)
@@ -396,9 +415,11 @@ export function UserStockDetail() {
           <motion.div initial={{opacity:0,y:-20}} animate={{opacity:1,y:0}} exit={{opacity:0,y:-20}}
             className="fixed top-24 right-6 z-50 flex items-center gap-3 bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 px-4 py-3 rounded-2xl shadow-xl">
             <CheckCircle className="w-5 h-5"/>
-            <div>
+            <div className="max-w-[260px]">
               <div className="text-sm font-medium">Order Placed!</div>
-              <div className="text-xs text-emerald-500/60">{tradeType==="buy"?"Buy":"Sell"} {qty} {symbol}</div>
+              {/* The server's wording, because an IOC may have filled only part
+                  of the quantity or nothing at all. */}
+              <div className="text-xs text-emerald-500/70">{placedMsg}</div>
             </div>
           </motion.div>
         )}
@@ -466,7 +487,7 @@ export function UserStockDetail() {
                     ["Shares",   parseFloat(myHolding.quantity||0).toFixed(2)],
                     // A short's entry is the price it was SOLD at, not a cost.
                     [isShortPos?"Avg Sell":"Avg Cost", `₹${parseFloat(myHolding.average_buy_price||0).toFixed(2)}`],
-                    [isShortPos?"Buy-back":"Mkt Value",`₹${parseFloat(myHolding.current_value||0).toLocaleString("en",{maximumFractionDigits:0})}`],
+                    [isShortPos?"Buy-back":"Mkt Value",inr0(myHolding.current_value)],
                     ["P&L",      `${parseFloat(myHolding.unrealized_pnl||0)>=0?"+":""}₹${Math.abs(parseFloat(myHolding.unrealized_pnl||0)).toFixed(0)}`],
                   ].map(([l,v])=>(
                     <div key={l}>
@@ -584,7 +605,7 @@ export function UserStockDetail() {
               <div>
                 <label className="text-xs text-gray-500 mb-2 block">Order Type</label>
                 <div className="flex gap-2">
-                  {(tradeMode==="intraday" ? ["market","limit"] : ["market"]).map(ot=>(
+                  {["market","limit"].map(ot=>(
                     <button key={ot}
                       onClick={()=>{
                         setOT(ot);
@@ -601,7 +622,8 @@ export function UserStockDetail() {
                 </div>
                 {tradeMode==="delivery" ? (
                   <div className="text-[10px] text-gray-600 mt-1.5">
-                    Delivery supports Market orders only. Switch to Intraday for Limit orders.
+                    Delivery holds the shares until you sell. A Limit order can rest
+                    across sessions with GTC validity.
                   </div>
                 ) : (
                   <div className="text-[10px] text-gray-600 mt-1.5">
@@ -623,6 +645,21 @@ export function UserStockDetail() {
                   placeholder="Enter Quantity"
                   aria-label="Quantity in shares"
                   className="w-full bg-[#141C30] border border-white/8 rounded-xl px-3 py-2.5 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-cyan-500/30"/>
+              </div>
+
+              {/* Validity — what happens if the order cannot fill. Same three
+                  choices the Trade screen offers, so the two tickets match. */}
+              <div>
+                <label className="text-xs text-gray-500 mb-2 block">Validity</label>
+                <div className="flex gap-2">
+                  {["DAY","GTC","IOC"].map(v=>(
+                    <button key={v} onClick={()=>{setValidity(v);setPlaceErr("");}}
+                      className={`flex-1 py-2 text-xs rounded-xl border transition-all ${validity===v?"border-cyan-500/50 bg-cyan-500/10 text-cyan-400 font-semibold":"border-white/8 bg-[#141C30] text-gray-500"}`}>
+                      {v === "DAY" ? "Day" : v}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[10px] text-gray-600 mt-1.5">{VALIDITY_HINTS[validity]}</div>
               </div>
 
               {/* Entry price — the level this order goes IN at */}
@@ -647,11 +684,21 @@ export function UserStockDetail() {
                   entry price for a stop to be measured against. */}
               {tradeMode==="intraday"&&orderType==="limit"&&(
                 <div>
-                  <label className="text-xs text-gray-500 mb-2 flex items-center justify-between">
-                    <span>Stop Loss <span className="text-gray-600">(optional)</span></span>
+                  <label className="text-xs text-gray-500 mb-2 flex items-center justify-between gap-2">
+                    <span className="flex items-center gap-1.5">
+                      Stop Loss <span className="text-gray-600">(optional)</span>
+                      {/* Distance from the live price, recomputed on every tick
+                          and on every keystroke. */}
+                      {slPct !== null && (
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold tabular-nums ${
+                          slPct < 0 ? "bg-red-500/10 text-red-400" : "bg-emerald-500/10 text-emerald-400"}`}>
+                          {slPct > 0 ? "+" : ""}{slPct.toFixed(2)}%
+                        </span>
+                      )}
+                    </span>
                     {slSuggestion && (
                       <button type="button" onClick={()=>setStopLossPx(slSuggestion)}
-                        className="text-[10px] text-cyan-400 hover:text-cyan-300">
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300 whitespace-nowrap">
                         −1% · ₹{slSuggestion}
                       </button>
                     )}
@@ -666,7 +713,12 @@ export function UserStockDetail() {
                   </div>
                   {stopLossPx && (
                     <div className={`text-[10px] mt-1.5 ${slError ? "text-red-400" : "text-gray-600"}`}>
-                      {slError || `Armed once this order fills · protects ~₹${slRisk.toFixed(2)} of risk`}
+                      {slError || (
+                        <>
+                          {slPct !== null && `${Math.abs(slPct).toFixed(2)}% ${slPct < 0 ? "below" : "above"} the live price · `}
+                          protects ~₹{slRisk.toFixed(2)} of risk
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -679,12 +731,12 @@ export function UserStockDetail() {
                 <div className="flex justify-between text-xs"><span className="text-gray-500">Commission (~0.1%)</span><span className="text-gray-400">₹{(total*0.001).toFixed(2)}</span></div>
                 <div className="pt-2 border-t border-white/5 flex justify-between text-sm">
                   <span className="text-gray-400">Est. Total</span>
-                  <span className="text-white font-bold">₹{total.toLocaleString("en",{maximumFractionDigits:2})}</span>
+                  <span className="text-white font-bold">{inr(total)}</span>
                 </div>
               </div>
 
               <div className="text-xs text-center text-gray-600">
-                Buying Power: <span className="text-white">₹{buyingPower.toLocaleString("en",{minimumFractionDigits:2})}</span>
+                Buying Power: <span className="text-white">{inr(buyingPower)}</span>
               </div>
 
               {/* Short sell — the least obvious thing this panel can do, so it
@@ -696,7 +748,7 @@ export function UserStockDetail() {
                     You sell now and buy back later. Profit if the price falls, loss if it rises.
                   </div>
                   <div>
-                    ₹{total.toLocaleString("en",{maximumFractionDigits:2})} is held from your wallet
+                    {inr(total)} is held from your wallet
                     as collateral until you square off — it is not credited to you.
                   </div>
                   <div className="opacity-80">
@@ -784,6 +836,7 @@ export function UserStockDetail() {
                   ["Symbol",     `${stock.ticker_symbol} · ${exchange}`],
                   ["Product",    tradeMode.toUpperCase()],
                   ["Order Type", orderType.toUpperCase()],
+                  ["Validity",   validity],
                   ["Quantity",   `${qty} shares`],
                   ["Price",      `₹${execPx.toFixed(2)}`],
                   // Only shown when one is attached, so the confirm step stays
@@ -791,7 +844,7 @@ export function UserStockDetail() {
                   ...(stopLossPx && tradeMode==="intraday" && orderType==="limit"
                     ? [["Stop Loss", `₹${parseFloat(stopLossPx).toFixed(2)}  ·  risk ≈ ₹${slRisk.toFixed(2)}`]]
                     : []),
-                  ["Est. Total", `₹${total.toLocaleString("en",{maximumFractionDigits:2})}`],
+                  ["Est. Total", inr(total)],
                 ].map(([l,v])=>(
                   <div key={l} className="flex justify-between text-sm">
                     <span className="text-gray-500">{l}</span>
@@ -802,13 +855,13 @@ export function UserStockDetail() {
 
               {isShortSell&&(
                 <div className="mb-4 p-3 bg-amber-500/10 rounded-xl border border-amber-500/20 text-xs text-amber-300 text-center">
-                  ₹{total.toLocaleString("en",{maximumFractionDigits:2})} will be held as collateral
+                  {inr(total)} will be held as collateral
                   until you buy these shares back. Nothing is credited to your balance now.
                 </div>
               )}
               {tradeType==="buy"&&!isCoveringBuy&&orderType==="market"&&(
                 <div className="mb-4 p-3 bg-cyan-500/10 rounded-xl border border-cyan-500/20 text-xs text-cyan-400 text-center">
-                  ₹{total.toLocaleString("en",{maximumFractionDigits:2})} will be deducted from your wallet balance.
+                  {inr(total)} will be deducted from your wallet balance.
                 </div>
               )}
               {tradeType==="buy"&&orderType==="limit"&&(

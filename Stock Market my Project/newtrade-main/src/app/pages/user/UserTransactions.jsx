@@ -13,6 +13,7 @@ import {
 } from "recharts";
 import { useLiveQuotes } from "../../context/LiveQuotesContext";
 import { StockLogo } from "../../components/StockLogo";
+import { inr, inr0 } from "../../utils/currency";
 
 const API_BASE = "http://127.0.0.1:5050/v1";
 const getToken = () => localStorage.getItem("access_token");
@@ -43,7 +44,21 @@ const STATUS_CONFIG = {
    waiting for its trigger lives in trade_orders and has to be fetched from
    there. Selecting it swaps the table for the open-orders view below. */
 const PENDING = "PENDING";
-const FILTERS = ["All", PENDING, "BUY", "SELL", "DIVIDEND", "DEPOSIT", "WITHDRAWAL"];
+
+/* Intraday and Delivery are not transaction TYPES either — they are which book
+   the trade belongs to, so they go out as `trade_mode` rather than `type`. The
+   server filters on it (a transaction's mode lives on its order), which keeps
+   pagination counts right instead of filtering whichever page is on screen. */
+const TRADE_MODES = ["INTRADAY", "DELIVERY"];
+
+const FILTERS = ["All", PENDING, ...TRADE_MODES, "BUY", "SELL", "DIVIDEND", "DEPOSIT", "WITHDRAWAL"];
+
+const FILTER_LABELS = {
+  All:       "All Types",
+  PENDING:   "Pending",
+  INTRADAY:  "Intraday",
+  DELIVERY:  "Delivery",
+};
 
 /* Order statuses that are still live and therefore cancellable. */
 const OPEN_ORDER_STATUSES = ["PENDING", "OPEN", "PARTIALLY_FILLED"];
@@ -327,7 +342,10 @@ export function UserTransactions() {
         page:     pg,
         per_page: perPage,
       });
-      if (typeFilter !== "All")  params.set("type",      typeFilter);
+      // Intraday/Delivery are a different axis from BUY/SELL — sent as
+      // trade_mode so the server filters on the order's book, not the txn type.
+      if (TRADE_MODES.includes(typeFilter))  params.set("trade_mode", typeFilter);
+      else if (typeFilter !== "All")         params.set("type",       typeFilter);
       if (fromDate)              params.set("from_date", fromDate);
       if (toDate)                params.set("to_date",   toDate);
 
@@ -476,10 +494,8 @@ export function UserTransactions() {
     catch { return d.slice(0, 10); }
   };
 
-  const fmtAmt = (v) => {
-    const n = parseFloat(v || 0);
-    return `₹${Math.abs(n).toLocaleString("en", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  };
+  // Always in full, always Indian-grouped — see utils/currency.
+  const fmtAmt = (v) => inr(Math.abs(parseFloat(v || 0)));
 
   /* Client-side search filter */
   /* Under All Types the two sources are shown together, pending first: an order
@@ -592,7 +608,7 @@ export function UserTransactions() {
                 <Tooltip
                   cursor={{ fill: "rgba(255,255,255,.03)" }}
                   contentStyle={{ background: "#0C1220", border: "1px solid rgba(255,255,255,.08)", borderRadius: 12, fontSize: 11 }}
-                  formatter={(v, name) => [`₹${parseFloat(v).toLocaleString("en", { maximumFractionDigits: 0 })}`, name === "buy" ? "Bought" : "Sold"]}
+                  formatter={(v, name) => [inr0(v), name === "buy" ? "Bought" : "Sold"]}
                 />
                 <Bar dataKey="buy"  radius={[3, 3, 0, 0]} fill="#10B981" maxBarSize={36} />
                 <Bar dataKey="sell" radius={[3, 3, 0, 0]} fill="#EF4444" maxBarSize={36} />
@@ -623,7 +639,7 @@ export function UserTransactions() {
                     : "border-white/8 text-gray-600 hover:text-white"
                 }`}>
                 {isPending && <Clock className="w-3 h-3" />}
-                {f === "All" ? "All Types" : isPending ? "Pending" : TYPE_CONFIG[f]?.label || f}
+                {FILTER_LABELS[f] || TYPE_CONFIG[f]?.label || f}
                 {/* Badge the count so an order waiting to execute is visible
                     without opening the tab. */}
                 {isPending && pending.length > 0 && (
@@ -693,7 +709,9 @@ export function UserTransactions() {
       <div className="bg-[#0C1220] border border-white/5 rounded-2xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/5">
           <div className="text-sm font-medium text-white">
-            {showPending ? "Pending Orders" : "Transaction History"}
+            {showPending ? "Pending Orders"
+              : TRADE_MODES.includes(typeFilter) ? `${FILTER_LABELS[typeFilter]} Transactions`
+              : "Transaction History"}
             {showPending
               ? <span className="ml-2 text-xs text-gray-600">({pending.length} waiting to execute)</span>
               : total > 0 && (
@@ -804,10 +822,16 @@ export function UserTransactions() {
                               {cfg.label}
                             </span>
                             {/* On a pending row the order type is what tells the
-                                user why it hasn't executed yet. */}
-                            {isPend && (
+                                user why it hasn't executed yet; on a settled one,
+                                which book the trade belongs to. */}
+                            {isPend ? (
                               <span className="text-[10px] text-gray-600">
                                 {t.order_type}{t.is_auto_stop_loss ? " · auto stop-loss" : ""}
+                              </span>
+                            ) : t.trade_mode && (
+                              <span className={`text-[10px] ${
+                                t.trade_mode === "INTRADAY" ? "text-amber-400/70" : "text-cyan-400/70"}`}>
+                                {t.trade_mode === "INTRADAY" ? "Intraday" : "Delivery"}
                               </span>
                             )}
                           </div>

@@ -166,6 +166,64 @@ def settlement(action, quantity, price, entry_price=None):
     raise ValueError(f'unknown settlement action: {action}')
 
 
+def _classify(order: TradeOrders, holding, trade_mode):
+    """Which of the four position transitions this order performs.
+
+    Pure lookup — no validation, no side effects. `execute_order` validates on
+    top of it; `execute_ioc` needs the same answer *before* filling, to work out
+    how much is fillable. Sharing it keeps the two from ever disagreeing about
+    what an order is doing.
+
+    Returns (action, is_short_position).
+    """
+    shorting = is_short(holding)
+    if order.order_side == OrderSide.SELL:
+        action = 'CLOSE_LONG' if (holding and not shorting) else 'OPEN_SHORT'
+    else:
+        action = 'COVER_SHORT' if shorting else 'OPEN_LONG'
+    return action, shorting
+
+
+def affordable_quantity(order_side, action, wallet, holding, quantity, price):
+    """How much of `quantity` can actually be filled right now.
+
+    This platform has no order book, so there is no "available quantity at a
+    price" to read off. What it does know are the two constraints that genuinely
+    cap a fill, and they are the ones an IOC order is answering:
+
+        BUY  — what the wallet can pay for, fee included
+        SELL — how many shares are actually held (a short is capped by margin
+               instead, which the BUY branch below already covers)
+
+    Deriving this from the synthesised depth book was the alternative, and it was
+    rejected: that book comes from Math.random(), so the same order would fill a
+    different amount each time it was placed.
+
+    Returns a Decimal between 0 and `quantity`.
+    """
+    want = _d(quantity)
+    px   = _d(price)
+    if want <= 0 or px <= 0:
+        return Decimal('0')
+
+    if action == 'CLOSE_LONG':
+        # Selling a long: capped by the shares on hand.
+        return min(want, _d(holding.quantity)) if holding else Decimal('0')
+
+    if action == 'COVER_SHORT':
+        # Buying back a short: capped by how much is still short.
+        return min(want, _d(holding.quantity)) if holding else Decimal('0')
+
+    # Opening — long or short — is capped by spendable cash. A short reserves the
+    # full notional as collateral, a buy pays the cost; both scale the same way.
+    per_share = px * (Decimal('1') + COMMISSION_RATE)
+    if per_share <= 0:
+        return Decimal('0')
+    affordable = _d(wallet.available_balance) / per_share
+    # Whole shares only — this platform never fills a fraction.
+    return min(want, Decimal(int(affordable)))
+
+
 def plan_position_effect(order_side, portfolio_id, stock_id, trade_mode):
     """Does this order OPEN a position or CLOSE one? Decided from what is open now.
 
@@ -293,28 +351,23 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
         logger.warning(f'[order_engine] order {order.order_id} rejected — {reason}')
         return None
 
-    if order.order_side == OrderSide.SELL:
-        if holding and not shorting:
-            action = 'CLOSE_LONG'
-            if _d(holding.quantity) < quantity:
-                return _reject('Insufficient shares at execution time.')
-        else:
-            action = 'OPEN_SHORT'
-            if trade_mode != TradeMode.INTRADAY:
-                return _reject('Insufficient shares — short selling is intraday only.')
-            # Re-check collateral at fill time; the wallet may have been drained
-            # between placing a queued short and it triggering.
-            required = short_margin(quantity, execution_price) + commission
-            held     = _d(order.estimated_amount) * (Decimal('1') + COMMISSION_RATE) if funds_locked else Decimal('0')
-            if _d(wallet.available_balance) + held < required:
-                return _reject('Insufficient funds for short margin at execution time.')
-    else:  # BUY
-        if shorting:
-            action = 'COVER_SHORT'
-            if _d(holding.quantity) < quantity:
-                return _reject('Cannot buy more than the open short quantity.')
-        else:
-            action = 'OPEN_LONG'
+    action, _ = _classify(order, holding, trade_mode)
+
+    if action == 'CLOSE_LONG':
+        if _d(holding.quantity) < quantity:
+            return _reject('Insufficient shares at execution time.')
+    elif action == 'OPEN_SHORT':
+        if trade_mode != TradeMode.INTRADAY:
+            return _reject('Insufficient shares — short selling is intraday only.')
+        # Re-check collateral at fill time; the wallet may have been drained
+        # between placing a queued short and it triggering.
+        required = short_margin(quantity, execution_price) + commission
+        held     = _d(order.estimated_amount) * (Decimal('1') + COMMISSION_RATE) if funds_locked else Decimal('0')
+        if _d(wallet.available_balance) + held < required:
+            return _reject('Insufficient funds for short margin at execution time.')
+    elif action == 'COVER_SHORT':
+        if _d(holding.quantity) < quantity:
+            return _reject('Cannot buy more than the open short quantity.')
 
     # An order placed to CLOSE a position must never end up opening one. This is
     # the case that matters: a stop-loss left armed after the user has already
@@ -484,6 +537,103 @@ def execute_order(order: TradeOrders, fill_price, funds_locked: bool = False):
     logger.info(f'[order_engine] filled order {order.order_id} '
                 f'[{action}] {quantity} @ {execution_price}')
     return exec_rec
+
+
+def execute_ioc(order: TradeOrders, price, all_or_none=False):
+    """Immediate-or-Cancel: take whatever can be filled now, cancel the rest.
+
+    `all_or_none=True` makes it Fill-or-Kill instead: the same instant execution,
+    but a partial fill is refused outright rather than taken. FOK is in
+    OrderDuration.CHOICES, so the API accepts it; without this it would be
+    validated as legal and then quietly behave like a DAY order.
+
+    An IOC never rests. Either it trades against the market as it stands this
+    instant, or it is gone — so there is no pending row left behind for the
+    engine to pick up later.
+
+        fully filled    → FILLED
+        partly filled   → PARTIALLY_FILLED, remainder cancelled
+        nothing fillable→ CANCELLED
+
+    Returns {'filled', 'cancelled', 'status', 'execution'} so the caller can tell
+    the user exactly what happened to each share they asked for.
+    """
+    requested = _d(order.quantity)
+    px        = _d(price)
+
+    def _result(filled, status, execution=None):
+        return {
+            'filled':    filled,
+            'cancelled': requested - filled,
+            'status':    status,
+            'execution': execution,
+        }
+
+    # A LIMIT IOC only trades if the market is already at or through the limit;
+    # it never waits for the price to come to it.
+    if order.order_type != OrderType.MARKET and not check_trigger(order, px):
+        order.order_status     = OrderStatus.CANCELLED
+        order.cancelled_at     = datetime.now(timezone.utc)
+        order.cancelled_by     = 'SYSTEM'
+        order.rejection_reason = 'IOC cancelled — the market was not at your price.'
+        order.update()
+        return _result(Decimal('0'), OrderStatus.CANCELLED)
+
+    fill_px = resolve_fill_price(order, px)
+
+    wallet     = Wallets.query.filter_by(user_id=order.user_id).first()
+    trade_mode = order.trade_mode or TradeMode.DELIVERY
+    holding    = open_position(order.portfolio_id, order.stock_id, trade_mode)
+    action, _  = _classify(order, holding, trade_mode)
+
+    fillable = affordable_quantity(order.order_side, action, wallet, holding, requested, fill_px)
+
+    if all_or_none and fillable < requested:
+        order.order_status     = OrderStatus.CANCELLED
+        order.cancelled_at     = datetime.now(timezone.utc)
+        order.cancelled_by     = 'SYSTEM'
+        order.rejection_reason = (
+            f'Fill-or-Kill cancelled — only {float(fillable):g} of '
+            f'{float(requested):g} could be filled, and FOK does not part-fill.')
+        order.update()
+        return _result(Decimal('0'), OrderStatus.CANCELLED)
+
+    if fillable <= 0:
+        order.order_status     = OrderStatus.CANCELLED
+        order.cancelled_at     = datetime.now(timezone.utc)
+        order.cancelled_by     = 'SYSTEM'
+        order.rejection_reason = ('IOC cancelled — not enough funds to buy any shares.'
+                                  if order.order_side == OrderSide.BUY else
+                                  'IOC cancelled — no shares available to sell.')
+        order.update()
+        return _result(Decimal('0'), OrderStatus.CANCELLED)
+
+    # Fill the part that can trade. execute_order works off remaining_quantity,
+    # so it is narrowed to the fillable amount first.
+    order.quantity           = fillable
+    order.remaining_quantity = fillable
+    order.update()
+
+    exec_rec = execute_order(order, fill_px, funds_locked=False)
+    if exec_rec is None:
+        return _result(Decimal('0'), order.order_status)
+
+    if fillable < requested:
+        # Record what was asked for versus what traded, then close the order —
+        # an IOC leaves nothing resting.
+        order.quantity           = requested
+        order.filled_quantity    = fillable
+        order.remaining_quantity = Decimal('0')
+        order.order_status       = OrderStatus.PARTIALLY_FILLED
+        order.cancelled_by       = 'SYSTEM'
+        order.cancelled_at       = datetime.now(timezone.utc)
+        order.rejection_reason   = (
+            f'IOC partially filled — {float(fillable):g} of {float(requested):g} '
+            f'traded, the remaining {float(requested - fillable):g} cancelled.')
+        order.update()
+        return _result(fillable, OrderStatus.PARTIALLY_FILLED, exec_rec)
+
+    return _result(fillable, OrderStatus.FILLED, exec_rec)
 
 
 def arm_stop_loss(order: TradeOrders, quantity, action):
@@ -820,6 +970,12 @@ def process_pending_orders() -> dict:
     orders = TradeOrders.query.filter(
         TradeOrders.order_status.in_(_OPEN_STATUSES),
         TradeOrders.order_type.in_(_QUEUED_TYPES),
+        # An order with nothing left to fill must never be touched again, whatever
+        # its status says. PARTIALLY_FILLED counts as "open" — which is right for
+        # a resting order that still has quantity — but an IOC that partly filled
+        # is finished, and re-filling it later would hand the user shares they
+        # were told had been cancelled.
+        TradeOrders.remaining_quantity > 0,
     ).all()
     if not orders:
         return {'checked': 0, 'filled': 0, 'expired': 0, 'errors': 0}
